@@ -142,7 +142,7 @@ protocol WaveDirectorProtocol: AnyObject {
     func evaluate(input: WaveDirectorInput) -> WaveDirective
 }
 
-// MARK: - Motor 1985: Reglas Fijas Rígidas (Ciego al jugador)
+// MARK: - Motor 1985: Reglas Fijas Rígidas (Ciego al jugador, escalado continuo)
 
 final class Classic1985Engine: WaveDirectorProtocol {
     private var didDropScheduledMedkit = false
@@ -153,6 +153,7 @@ final class Classic1985Engine: WaveDirectorProtocol {
 
     func evaluate(input: WaveDirectorInput) -> WaveDirective {
         let t = input.elapsedTime
+        let progress = min(1.0, max(0.0, t / 60.0))
 
         // Cura fija únicamente a los 30s sin importar la vida ni el estrés del jugador
         var shouldDropFixedMedkit = false
@@ -161,79 +162,47 @@ final class Classic1985Engine: WaveDirectorProtocol {
             shouldDropFixedMedkit = true
         }
 
-        if t < 12.0 {
-            return WaveDirective(
-                spawnInterval: 0.60,
-                maxActiveEnemies: 24,
-                enemySpeedMultiplier: 1.08,
-                swarmWeight: 0.74,
-                tankWeight: 0.20,
-                stalkerWeight: 0.06,
-                safeEscapeCenterAngle: nil,
-                safeEscapeHalfConeRadians: 0,
-                suppressSimultaneousLunges: false,
-                spawnEmergencyMedkit: shouldDropFixedMedkit,
-                medkitBiasAhead: false,
-                microMessage: "Regla fija [0-12s] → Asedio inicial",
-                isInterventionActive: false
-            )
-        } else if t < 28.0 {
-            let msg = "Regla fija [12-28s] → Desplegando Mártires"
-            return WaveDirective(
-                spawnInterval: 0.42,
-                maxActiveEnemies: 34,
-                enemySpeedMultiplier: 1.20,
-                swarmWeight: 0.56,
-                tankWeight: 0.24,
-                stalkerWeight: 0.20,
-                safeEscapeCenterAngle: nil,
-                safeEscapeHalfConeRadians: 0,
-                suppressSimultaneousLunges: false,
-                spawnEmergencyMedkit: shouldDropFixedMedkit,
-                medkitBiasAhead: false,
-                microMessage: msg,
-                isInterventionActive: false
-            )
+        // Progresión matemática estrictamente creciente con el tiempo (0.60s -> 0.133s, 24 -> 74 enemigos, 1.08x -> 1.68x)
+        let interval = 0.60 / (1.0 + 3.5 * progress)
+        let maxEnemies = 24 + Int(50.0 * progress)
+        let speedMultiplier: CGFloat = 1.08 + CGFloat(0.60 * progress)
+
+        let swarmW = max(0.38, 0.74 - 0.36 * progress)
+        let tankW = 0.20 + 0.11 * progress
+        let stalkerW = 0.06 + 0.25 * progress
+
+        let msg: String
+        if shouldDropFixedMedkit {
+            msg = "Regla fija [30s] → Botiquín programado"
+        } else if t < 15.0 {
+            msg = "Regla fija [0-15s] → Escalamiento continuo"
+        } else if t < 30.0 {
+            msg = "Regla fija [15-30s] → Mártires acelerando"
         } else if t < 45.0 {
-            let msg = shouldDropFixedMedkit
-                ? "Regla fija [30s] → Botiquín programado"
-                : "Regla fija [28-45s] → Estrés ignorado"
-            return WaveDirective(
-                spawnInterval: 0.30,
-                maxActiveEnemies: 44,
-                enemySpeedMultiplier: 1.32,
-                swarmWeight: 0.46,
-                tankWeight: 0.28,
-                stalkerWeight: 0.26,
-                safeEscapeCenterAngle: nil,
-                safeEscapeHalfConeRadians: 0,
-                suppressSimultaneousLunges: false,
-                spawnEmergencyMedkit: shouldDropFixedMedkit,
-                medkitBiasAhead: false,
-                microMessage: msg,
-                isInterventionActive: false
-            )
+            msg = "Regla fija [30-45s] → Asedio en aumento"
         } else {
-            return WaveDirective(
-                spawnInterval: 0.21,
-                maxActiveEnemies: 56,
-                enemySpeedMultiplier: 1.46,
-                swarmWeight: 0.42,
-                tankWeight: 0.30,
-                stalkerWeight: 0.28,
-                safeEscapeCenterAngle: nil,
-                safeEscapeHalfConeRadians: 0,
-                suppressSimultaneousLunges: false,
-                spawnEmergencyMedkit: shouldDropFixedMedkit,
-                medkitBiasAhead: false,
-                microMessage: "Regla fija [45-60s] → Enjambre implacable",
-                isInterventionActive: false
-            )
+            msg = "Regla fija [45-60s] → Enjambre implacable"
         }
+
+        return WaveDirective(
+            spawnInterval: interval,
+            maxActiveEnemies: maxEnemies,
+            enemySpeedMultiplier: speedMultiplier,
+            swarmWeight: swarmW,
+            tankWeight: tankW,
+            stalkerWeight: stalkerW,
+            safeEscapeCenterAngle: nil,
+            safeEscapeHalfConeRadians: 0,
+            suppressSimultaneousLunges: false,
+            spawnEmergencyMedkit: shouldDropFixedMedkit,
+            medkitBiasAhead: false,
+            microMessage: msg,
+            isInterventionActive: false
+        )
     }
 }
 
-// MARK: - Motor 2026: IA Directora Adaptativa (Algoritmo de Retención)
+// MARK: - Motor 2026: IA Directora Adaptativa (Presión Monotónica + Táctica de Estrés)
 
 final class Adaptive2026Director: WaveDirectorProtocol {
     private var medkitCooldown: TimeInterval = 5.5
@@ -241,6 +210,11 @@ final class Adaptive2026Director: WaveDirectorProtocol {
     private var currentMessage: String = "IA activa → Calibrando presión"
     private var currentState: DirectorRegime = .optimalFlow
     private var totalMedkitsGranted: Int = 0
+
+    // Trinquete monotónico: la dificultad jamás retrocede durante la partida
+    private var hardestSpawnInterval: TimeInterval = 0.41
+    private var highestMaxEnemies: Int = 38
+    private var highestSpeedMultiplier: CGFloat = 1.12
 
     private enum DirectorRegime {
         case lowStressPush
@@ -255,6 +229,9 @@ final class Adaptive2026Director: WaveDirectorProtocol {
         currentMessage = "IA activa → Calibrando presión"
         currentState = .optimalFlow
         totalMedkitsGranted = 0
+        hardestSpawnInterval = 0.41
+        highestMaxEnemies = 38
+        highestSpeedMultiplier = 1.12
     }
 
     func evaluate(input: WaveDirectorInput) -> WaveDirective {
@@ -265,6 +242,7 @@ final class Adaptive2026Director: WaveDirectorProtocol {
         let stress = input.stressIndex
         let hp = input.playerHPNormalized
         let t = input.elapsedTime
+        let progress = min(1.0, max(0.0, t / 60.0))
 
         let moveMag = hypot(input.playerVelocity.dx, input.playerVelocity.dy)
         let escapeAngle: CGFloat? = moveMag > 12.0
@@ -296,102 +274,122 @@ final class Adaptive2026Director: WaveDirectorProtocol {
             totalMedkitsGranted += 1
         }
 
+        // Suelo progresivo con el tiempo (parte en el nivel actual y sube sin parar hasta 60s)
+        let timeBaseInterval = 0.41 / (1.0 + 1.56 * progress)
+        let timeBaseMaxEnemies = 38 + Int((30.0 * progress).rounded())
+        let timeBaseSpeed: CGFloat = 1.12 + CGFloat(0.46 * progress)
+
+        let candidateInterval: TimeInterval
+        let candidateMaxEnemies: Int
+        let candidateSpeed: CGFloat
+        let swarmW: Double
+        let tankW: Double
+        let stalkerW: Double
+        let safeAngle: CGFloat?
+        let safeHalfCone: CGFloat
+        let suppressLunges: Bool
+        let interventionActive: Bool
+
         switch currentState {
         case .emergencyRescue:
+            // No reduce la dificultad actual: ayuda tácticamente abriendo corredor y soltando cura
+            candidateInterval = timeBaseInterval
+            candidateMaxEnemies = timeBaseMaxEnemies
+            candidateSpeed = timeBaseSpeed
+            swarmW = max(0.46, 0.70 - 0.24 * progress)
+            tankW = 0.18 + 0.08 * progress
+            stalkerW = 0.12 + 0.16 * progress
+            safeAngle = escapeAngle
+            safeHalfCone = .pi * 0.25
+            suppressLunges = true
+            interventionActive = true
             let msg = dropMedkit
-                ? "Jugador al límite → Soltando cura"
-                : "Presión crítica → Abriendo brecha"
+                ? "Jugador al límite → Cura sin tregua"
+                : "Presión crítica → Corredor de escape"
             updateMessage(msg, force: dropMedkit || regimeChanged)
-            return WaveDirective(
-                spawnInterval: 1.02,
-                maxActiveEnemies: 24,
-                enemySpeedMultiplier: 0.85,
-                swarmWeight: 0.78,
-                tankWeight: 0.14,
-                stalkerWeight: 0.08,
-                safeEscapeCenterAngle: escapeAngle,
-                safeEscapeHalfConeRadians: .pi * 0.25, // ~90 grados libres para huir
-                suppressSimultaneousLunges: true,
-                spawnEmergencyMedkit: dropMedkit,
-                medkitBiasAhead: true,
-                microMessage: currentMessage,
-                isInterventionActive: true
-            )
 
         case .highStressRelief:
+            // Mantiene el ritmo ascendente abriendo ángulo de evasión sin ralentizar criaturas
+            candidateInterval = timeBaseInterval
+            candidateMaxEnemies = timeBaseMaxEnemies
+            candidateSpeed = timeBaseSpeed
+            swarmW = max(0.42, 0.62 - 0.20 * progress)
+            tankW = 0.22 + 0.08 * progress
+            stalkerW = 0.16 + 0.12 * progress
+            safeAngle = escapeAngle
+            safeHalfCone = .pi * 0.20
+            suppressLunges = true
+            interventionActive = true
             let msg = escapeAngle != nil
-                ? "Estrés alto → Abriendo vía de escape"
-                : "Estrés alto → Regulando asedio"
+                ? "Estrés alto → Brecha táctica activa"
+                : "Estrés alto → Presión sostenida"
             updateMessage(msg, force: regimeChanged)
-            return WaveDirective(
-                spawnInterval: 0.72,
-                maxActiveEnemies: 32,
-                enemySpeedMultiplier: 0.94,
-                swarmWeight: 0.66,
-                tankWeight: 0.20,
-                stalkerWeight: 0.14,
-                safeEscapeCenterAngle: escapeAngle,
-                safeEscapeHalfConeRadians: .pi * 0.20,
-                suppressSimultaneousLunges: true,
-                spawnEmergencyMedkit: dropMedkit,
-                medkitBiasAhead: true,
-                microMessage: currentMessage,
-                isInterventionActive: true
-            )
 
         case .lowStressPush:
+            // El estrés bajo inyecta aceleración permanente nunca inferior a 0.26s / 46 / 1.28x
+            candidateInterval = max(0.12, min(0.26 * (1.0 - 0.35 * progress), timeBaseInterval * 0.74))
+            candidateMaxEnemies = max(46 + Int((16.0 * progress).rounded()), timeBaseMaxEnemies + 7)
+            candidateSpeed = max(1.28 + CGFloat(0.32 * progress), timeBaseSpeed + 0.13)
+            swarmW = 0.40
+            tankW = 0.30
+            stalkerW = t > 4.0 ? 0.30 : 0.14
+            safeAngle = nil
+            safeHalfCone = 0
+            suppressLunges = false
+            interventionActive = true
             let msg: String
             if dropMedkit {
                 msg = "Desgaste detectado → Gota de Gracia"
             } else if t > 8.0 {
-                msg = "Estrés bajo → Inyectando horda letal"
+                msg = "Estrés bajo → Escalamiento letal"
             } else {
                 msg = "Ritmo cómodo → Acelerando amenaza"
             }
             updateMessage(msg, force: dropMedkit || regimeChanged)
-            return WaveDirective(
-                spawnInterval: 0.26,
-                maxActiveEnemies: 46,
-                enemySpeedMultiplier: 1.28,
-                swarmWeight: 0.44,
-                tankWeight: 0.28,
-                stalkerWeight: t > 4.0 ? 0.28 : 0.12,
-                safeEscapeCenterAngle: nil,
-                safeEscapeHalfConeRadians: 0,
-                suppressSimultaneousLunges: false,
-                spawnEmergencyMedkit: dropMedkit,
-                medkitBiasAhead: false,
-                microMessage: currentMessage,
-                isInterventionActive: true
-            )
 
         case .optimalFlow:
-            let isClimax = t >= 46.0
+            let isClimax = t >= 42.0
+            candidateInterval = timeBaseInterval * (isClimax ? 0.90 : 1.0)
+            candidateMaxEnemies = timeBaseMaxEnemies + (isClimax ? 4 : 0)
+            candidateSpeed = timeBaseSpeed + (isClimax ? 0.05 : 0.0)
+            swarmW = max(0.38, 0.52 - 0.14 * progress)
+            tankW = 0.26 + 0.06 * progress
+            stalkerW = t > 5.0 ? (0.22 + 0.08 * progress) : 0.12
+            safeAngle = nil
+            safeHalfCone = 0
+            suppressLunges = false
+            interventionActive = isClimax
             let msg: String
             if dropMedkit {
                 msg = "Desgaste detectado → Gota de Gracia"
             } else if isClimax {
                 msg = "Clímax final → Presión máxima"
             } else {
-                msg = "Tensión óptima → Asedio constante"
+                msg = "Tensión óptima → Escalando oleada"
             }
             updateMessage(msg, force: dropMedkit || regimeChanged)
-            return WaveDirective(
-                spawnInterval: isClimax ? 0.30 : 0.41,
-                maxActiveEnemies: isClimax ? 44 : 38,
-                enemySpeedMultiplier: isClimax ? 1.24 : 1.12,
-                swarmWeight: 0.50,
-                tankWeight: 0.26,
-                stalkerWeight: t > 6.0 ? 0.24 : 0.10,
-                safeEscapeCenterAngle: nil,
-                safeEscapeHalfConeRadians: 0,
-                suppressSimultaneousLunges: false,
-                spawnEmergencyMedkit: dropMedkit,
-                medkitBiasAhead: true,
-                microMessage: currentMessage,
-                isInterventionActive: false
-            )
         }
+
+        // Aplicar trinquete monotónico: nunca baja la cadencia, el tope ni la velocidad ya alcanzados
+        hardestSpawnInterval = min(hardestSpawnInterval, candidateInterval)
+        highestMaxEnemies = max(highestMaxEnemies, candidateMaxEnemies)
+        highestSpeedMultiplier = max(highestSpeedMultiplier, candidateSpeed)
+
+        return WaveDirective(
+            spawnInterval: hardestSpawnInterval,
+            maxActiveEnemies: highestMaxEnemies,
+            enemySpeedMultiplier: highestSpeedMultiplier,
+            swarmWeight: swarmW,
+            tankWeight: tankW,
+            stalkerWeight: stalkerW,
+            safeEscapeCenterAngle: safeAngle,
+            safeEscapeHalfConeRadians: safeHalfCone,
+            suppressSimultaneousLunges: suppressLunges,
+            spawnEmergencyMedkit: dropMedkit,
+            medkitBiasAhead: true,
+            microMessage: currentMessage,
+            isInterventionActive: interventionActive
+        )
     }
 
     private func updateMessage(_ next: String, force: Bool) {
@@ -402,7 +400,7 @@ final class Adaptive2026Director: WaveDirectorProtocol {
     }
 }
 
-// MARK: - Motor Híbrido (1985 × 2026): Reloj Rígido + Mutación Adaptativa
+// MARK: - Motor Híbrido (1985 × 2026): Reloj Rígido + IA Directora Monotónica
 
 final class HybridMixDirector: WaveDirectorProtocol {
     private let fixed1985 = Classic1985Engine()
@@ -411,12 +409,20 @@ final class HybridMixDirector: WaveDirectorProtocol {
     private var currentMessage: String = "Mix 85×26 → Reloj fijo + IA"
     private var wasInClockSurge = false
 
+    // Trinquete monotónico: cada ráfaga cronometrada consolida el nuevo piso de dificultad
+    private var hardestSpawnInterval: TimeInterval = 0.41
+    private var highestMaxEnemies: Int = 38
+    private var highestSpeedMultiplier: CGFloat = 1.15
+
     func reset() {
         fixed1985.reset()
         adaptive2026.reset()
         messageHoldTimer = 0.0
         currentMessage = "Mix 85×26 → Reloj fijo + IA"
         wasInClockSurge = false
+        hardestSpawnInterval = 0.41
+        highestMaxEnemies = 38
+        highestSpeedMultiplier = 1.15
     }
 
     func evaluate(input: WaveDirectorInput) -> WaveDirective {
@@ -426,6 +432,7 @@ final class HybridMixDirector: WaveDirectorProtocol {
         let baseFixed = fixed1985.evaluate(input: input)
         let adaptive = adaptive2026.evaluate(input: input)
         let t = input.elapsedTime
+        let progress = min(1.0, max(0.0, t / 60.0))
         let stress = input.stressIndex
 
         // Pulsos fijos del reloj 1985 cada 15s (15s, 30s, 45s) durante 3.2s
@@ -435,22 +442,36 @@ final class HybridMixDirector: WaveDirectorProtocol {
         let surgeChanged = inClockSurge != wasInClockSurge
         wasInClockSurge = inClockSurge
 
+        let timeFloorInterval = 0.41 / (1.0 + 2.42 * progress)
+        let timeFloorEnemies = 38 + Int((36.0 * progress).rounded())
+        let timeFloorSpeed: CGFloat = 1.15 + CGFloat(0.55 * progress)
+
         let rawInterval: TimeInterval
         if inClockSurge {
-            rawInterval = min(baseFixed.spawnInterval, adaptive.spawnInterval) * 0.72
+            rawInterval = min(timeFloorInterval, min(baseFixed.spawnInterval, adaptive.spawnInterval)) * 0.72
         } else if stress < 42.0 {
-            rawInterval = min(baseFixed.spawnInterval, adaptive.spawnInterval) * 0.92
+            rawInterval = min(timeFloorInterval, min(baseFixed.spawnInterval, adaptive.spawnInterval)) * 0.90
         } else {
-            rawInterval = baseFixed.spawnInterval * 0.45 + adaptive.spawnInterval * 0.55
+            rawInterval = min(timeFloorInterval, baseFixed.spawnInterval * 0.45 + adaptive.spawnInterval * 0.55)
         }
-        let mixedInterval = max(0.18, rawInterval)
+        let candidateInterval = max(0.11, rawInterval)
 
-        let mixedMaxEnemies = max(baseFixed.maxActiveEnemies, adaptive.maxActiveEnemies) + (inClockSurge ? 6 : 2)
+        let candidateMaxEnemies = max(
+            timeFloorEnemies,
+            max(baseFixed.maxActiveEnemies, adaptive.maxActiveEnemies)
+        ) + (inClockSurge ? 6 : 2)
 
-        let speedBase = baseFixed.enemySpeedMultiplier * 0.48 + adaptive.enemySpeedMultiplier * 0.52
-        let mixedSpeed = speedBase + (inClockSurge ? 0.10 : 0.03)
+        let speedBase = max(
+            timeFloorSpeed,
+            baseFixed.enemySpeedMultiplier * 0.48 + adaptive.enemySpeedMultiplier * 0.52
+        )
+        let candidateSpeed = speedBase + (inClockSurge ? 0.10 : 0.03)
 
-        // Las ráfagas cronometradas 1985 no perdonan; fuera de ellas la IA 2026 abre brecha parcial si el estrés desborda
+        hardestSpawnInterval = min(hardestSpawnInterval, candidateInterval)
+        highestMaxEnemies = max(highestMaxEnemies, candidateMaxEnemies)
+        highestSpeedMultiplier = max(highestSpeedMultiplier, candidateSpeed)
+
+        // Las ráfagas cronometradas 1985 no perdonan; fuera de ellas la IA 2026 abre brecha parcial sin bajar el ritmo
         let partialEscapeAngle: CGFloat? = (!inClockSurge && (stress >= 72.0 || input.playerHPNormalized <= 0.30))
             ? adaptive.safeEscapeCenterAngle
             : nil
@@ -472,7 +493,7 @@ final class HybridMixDirector: WaveDirectorProtocol {
         } else if partialEscapeAngle != nil {
             nextMsg = "Mix 85×26 → Brecha parcial 2026"
         } else {
-            nextMsg = "Mix 85×26 → Oleada fija + IA activa"
+            nextMsg = "Mix 85×26 → Presión creciente"
         }
 
         if forceMsg || messageHoldTimer <= 0 {
@@ -485,9 +506,9 @@ final class HybridMixDirector: WaveDirectorProtocol {
         let stalkerW = baseFixed.stalkerWeight * 0.5 + adaptive.stalkerWeight * 0.5 + (inClockSurge ? 0.05 : 0.0)
 
         return WaveDirective(
-            spawnInterval: mixedInterval,
-            maxActiveEnemies: mixedMaxEnemies,
-            enemySpeedMultiplier: mixedSpeed,
+            spawnInterval: hardestSpawnInterval,
+            maxActiveEnemies: highestMaxEnemies,
+            enemySpeedMultiplier: highestSpeedMultiplier,
             swarmWeight: swarmW,
             tankWeight: tankW,
             stalkerWeight: stalkerW,

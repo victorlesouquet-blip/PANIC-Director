@@ -9,8 +9,10 @@ struct StartScreenView: View {
     @Binding var selectedMode: GameMode
     @Binding var selectedAvatar: PlayerAvatar
     let recordedCount: Int
+    let uniquePlayerCount: Int
     let onStartGame: @MainActor () -> Void
     let onOpenTelemetry: @MainActor () -> Void
+    let onOpenPlayers: @MainActor () -> Void
 
     private var startButtonBackground: Color {
         switch selectedMode {
@@ -111,7 +113,9 @@ struct StartScreenView: View {
                     Button(action: {
                         let gen = UIImpactFeedbackGenerator(style: .medium)
                         gen.impactOccurred()
-                        onStartGame()
+                        MainActor.assumeIsolated {
+                            onStartGame()
+                        }
                     }) {
                         HStack(spacing: 10) {
                             Image(systemName: "play.fill")
@@ -128,28 +132,60 @@ struct StartScreenView: View {
                     }
                     .buttonStyle(.plain)
 
-                    // Acceso directo a Telemetría de Clase
-                    Button(action: {
-                        MainActor.assumeIsolated {
-                            onOpenTelemetry()
+                    // Accesos directos: Telemetría de Clase y Directorio/Ránking de Jugadores
+                    HStack(spacing: 10) {
+                        Button(action: {
+                            MainActor.assumeIsolated {
+                                onOpenTelemetry()
+                            }
+                        }) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "chart.bar.xaxis")
+                                    .font(.subheadline)
+                                Text("Telemetría (\(recordedCount))")
+                                    .font(.caption.monospaced().weight(.bold))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.75)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .padding(.horizontal, 8)
+                            .background(RelicarioPalette.swCardBG)
+                            .foregroundStyle(RelicarioPalette.swColdSilver)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(RelicarioPalette.swColdSilver.opacity(0.35), lineWidth: 1.0)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
                         }
-                    }) {
-                        HStack(spacing: 8) {
-                            Image(systemName: "chart.bar.xaxis")
-                            Text("Telemetría de Clase (\(recordedCount))")
-                                .font(.subheadline.weight(.semibold))
+                        .buttonStyle(.plain)
+
+                        Button(action: {
+                            MainActor.assumeIsolated {
+                                onOpenPlayers()
+                            }
+                        }) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "trophy.fill")
+                                    .font(.subheadline)
+                                Text("Jugadores (\(uniquePlayerCount))")
+                                    .font(.caption.monospaced().weight(.bold))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.75)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .padding(.horizontal, 8)
+                            .background(RelicarioPalette.swCardBG)
+                            .foregroundStyle(RelicarioPalette.swGold)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(RelicarioPalette.swGold.opacity(0.42), lineWidth: 1.0)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
                         }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .background(RelicarioPalette.swCardBG)
-                        .foregroundStyle(RelicarioPalette.swColdSilver)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12)
-                                .stroke(RelicarioPalette.swColdSilver.opacity(0.35), lineWidth: 1.0)
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                     .padding(.bottom, 20)
                 }
                 .padding(.horizontal, 18)

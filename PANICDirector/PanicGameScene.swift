@@ -54,7 +54,7 @@ final class GameSessionViewModel {
 
         switch mode {
         case .classic1985:
-            self.snapshot.directorMessage = "Regla fija [0-12s] → Asedio inicial"
+            self.snapshot.directorMessage = "Regla fija [0-15s] → Escalamiento continuo"
         case .director2026:
             self.snapshot.directorMessage = "IA activa → Leyendo estrés"
         case .hybrid1985x2026:
@@ -847,6 +847,9 @@ final class PanicGameScene: SKScene {
     // MARK: - Comportamiento de Criaturas, Habilidades y Colisiones
 
     private func updateEnemies(dt: TimeInterval, directive: WaveDirective, bounds: CGRect) {
+        let tProgress = min(1.0, max(0.0, elapsedTime / totalRunDuration))
+        let cooldownScale = max(0.55, 1.0 - tProgress * 0.42)
+
         var activeOrStartedLunges = enemies.reduce(0) { count, e in
             if case .lunging = e.stalkerPhase { return count + 1 }
             if case .telegraphing = e.stalkerPhase { return count + 1 }
@@ -869,9 +872,10 @@ final class PanicGameScene: SKScene {
             case .desollado:
                 let visual = enemy.node as? DesolladoVisualNode
                 if enemy.abilityActiveTimer > 0 {
-                    // Salto depredador frontal a corta distancia
+                    // Salto depredador frontal cada vez más veloz con el paso del tiempo
                     enemy.abilityActiveTimer = max(0, enemy.abilityActiveTimer - dt)
-                    let pounceSpeed = enemy.baseSpeed * directive.enemySpeedMultiplier * 1.62
+                    let pounceFactor: CGFloat = 1.62 + CGFloat(tProgress) * 0.28
+                    let pounceSpeed = enemy.baseSpeed * directive.enemySpeedMultiplier * pounceFactor
                     enemy.node.position.x += dirToPlayer.dx * pounceSpeed * CGFloat(dt)
                     enemy.node.position.y += dirToPlayer.dy * pounceSpeed * CGFloat(dt)
                     enemy.node.zRotation = angleToPlayer
@@ -880,9 +884,10 @@ final class PanicGameScene: SKScene {
                     }
                 } else {
                     enemy.abilityCooldown -= dt
-                    if enemy.abilityCooldown <= 0 && distToPlayer < 150 {
+                    let pounceTriggerRange: CGFloat = 150.0 + CGFloat(tProgress) * 35.0
+                    if enemy.abilityCooldown <= 0 && distToPlayer < pounceTriggerRange {
                         enemy.abilityActiveTimer = 0.38
-                        enemy.abilityCooldown = TimeInterval.random(in: 2.2...3.2)
+                        enemy.abilityCooldown = TimeInterval.random(in: 2.2...3.2) * cooldownScale
                         visual?.setPouncing(true)
                     } else {
                         // Zigzag espasmódico rápido
@@ -900,7 +905,7 @@ final class PanicGameScene: SKScene {
             case .jaula:
                 let visual = enemy.node as? JaulaViscerasVisualNode
                 let frenzied = Double(enemy.hp) / Double(max(1, enemy.maxHP)) <= 0.30
-                let frenzyBoost: CGFloat = frenzied ? 1.68 : 1.0
+                let frenzyBoost: CGFloat = frenzied ? (1.68 + CGFloat(tProgress) * 0.20) : 1.0
 
                 if enemy.isSpitTelegraphing {
                     enemy.abilityActiveTimer -= dt
@@ -909,9 +914,9 @@ final class PanicGameScene: SKScene {
                     enemy.node.position.y += dirToPlayer.dy * slowSpeed * CGFloat(dt)
                     if enemy.abilityActiveTimer <= 0 {
                         enemy.isSpitTelegraphing = false
-                        enemy.abilityCooldown = frenzied
+                        enemy.abilityCooldown = (frenzied
                             ? TimeInterval.random(in: 2.4...3.2)
-                            : TimeInterval.random(in: 3.3...4.4)
+                            : TimeInterval.random(in: 3.3...4.4)) * cooldownScale
                         spawnEnemyBoneVolley(
                             from: enemy.node.position,
                             baseAngle: angleToPlayer,
@@ -985,7 +990,7 @@ final class PanicGameScene: SKScene {
                 if d <= enemy.hitRadius + 10.5 {
                     let dmg: Int
                     if enemy.archetype == .martir, case .lunging = enemy.stalkerPhase {
-                        dmg = 26
+                        dmg = 26 + Int(elapsedTime / 24.0) * 2
                     } else {
                         dmg = enemy.contactDamage
                     }
@@ -997,8 +1002,21 @@ final class PanicGameScene: SKScene {
     }
 
     private func spawnEnemyBoneVolley(from origin: CGPoint, baseAngle: CGFloat, frenzied: Bool) {
-        let offsets: [CGFloat] = frenzied ? [-0.27, -0.09, 0.09, 0.27] : [-0.22, 0.0, 0.22]
-        let speed: CGFloat = frenzied ? 235.0 : 198.0
+        let tProgress = min(1.0, max(0.0, elapsedTime / totalRunDuration))
+        let lateBarrage = elapsedTime >= 35.0
+        let offsets: [CGFloat]
+        if frenzied {
+            offsets = lateBarrage
+                ? [-0.32, -0.16, 0.0, 0.16, 0.32]
+                : [-0.27, -0.09, 0.09, 0.27]
+        } else {
+            offsets = lateBarrage
+                ? [-0.28, -0.095, 0.095, 0.28]
+                : [-0.22, 0.0, 0.22]
+        }
+
+        let speed: CGFloat = (frenzied ? 235.0 : 198.0) * (1.0 + CGFloat(tProgress) * 0.30)
+        let boltDamage = 14 + Int(elapsedTime / 22.0) * 2
 
         for offset in offsets {
             let shotAngle = baseAngle + offset
@@ -1007,7 +1025,7 @@ final class PanicGameScene: SKScene {
             worldLayer.addChild(bolt)
 
             let vel = CGVector(dx: cos(shotAngle) * speed, dy: sin(shotAngle) * speed)
-            enemyProjectiles.append(EnemyProjectileEntity(node: bolt, velocity: vel, remainingLife: 2.3, damage: 14))
+            enemyProjectiles.append(EnemyProjectileEntity(node: bolt, velocity: vel, remainingLife: 2.3, damage: boltDamage))
         }
     }
 
@@ -1054,6 +1072,8 @@ final class PanicGameScene: SKScene {
         canStartNewLunge: Bool
     ) {
         let visual = enemy.node as? MartirVisualNode
+        let tProgress = min(1.0, max(0.0, elapsedTime / totalRunDuration))
+        let cooldownScale = max(0.55, 1.0 - tProgress * 0.42)
 
         switch enemy.stalkerPhase {
         case .stalking(let cooldown):
@@ -1072,20 +1092,21 @@ final class PanicGameScene: SKScene {
 
             let nextCD = cooldown - dt
             if nextCD <= 0 && distToPlayer < 330 && canStartNewLunge {
-                enemy.stalkerPhase = .telegraphing(remaining: 0.40, angle: angleToPlayer)
+                let telegraphDuration = max(0.32, 0.40 - tProgress * 0.08)
+                enemy.stalkerPhase = .telegraphing(remaining: telegraphDuration, angle: angleToPlayer)
             } else {
                 enemy.stalkerPhase = .stalking(cooldown: nextCD)
             }
 
         case .telegraphing(let remaining, let lockedAngle):
-            let updatedAngle = remaining > 0.19 ? angleToPlayer : lockedAngle
+            let updatedAngle = remaining > 0.16 ? angleToPlayer : lockedAngle
             enemy.node.zRotation = updatedAngle
             visual?.setTelegraph(active: true, distance: min(275, distToPlayer + 40))
 
             let nextRem = remaining - dt
             if nextRem <= 0 {
                 visual?.setTelegraph(active: false, distance: 0)
-                let dashSpeed: CGFloat = 510.0 * max(0.88, directive.enemySpeedMultiplier)
+                let dashSpeed: CGFloat = (510.0 + CGFloat(tProgress) * 110.0) * max(1.0, directive.enemySpeedMultiplier)
                 let vel = CGVector(dx: cos(updatedAngle) * dashSpeed, dy: sin(updatedAngle) * dashSpeed)
                 enemy.stalkerPhase = .lunging(remaining: 0.34, velocity: vel, trailTimer: 0)
             } else {
@@ -1102,11 +1123,13 @@ final class PanicGameScene: SKScene {
             }
             let nextRem = remaining - dt
             if nextRem <= 0 {
-                // Onda de choque breve al rematar la embestida
-                worldLayer.addChild(ParticleFactory.makeShockRing(at: enemy.node.position, color: RelicarioPalette.vermilion, radius: 34))
+                // Onda de choque creciente al rematar la embestida
+                let shockRadius: CGFloat = 34.0 + CGFloat(tProgress) * 10.0
+                let shockDamage = 12 + Int(elapsedTime / 25.0) * 2
+                worldLayer.addChild(ParticleFactory.makeShockRing(at: enemy.node.position, color: RelicarioPalette.vermilion, radius: shockRadius))
                 let shockDist = hypot(enemy.node.position.x - playerPos.x, enemy.node.position.y - playerPos.y)
-                if shockDist <= 34.0 && invulnerabilityTimer <= 0 && !hasEnded {
-                    applyDamageToPlayer(12)
+                if shockDist <= shockRadius && invulnerabilityTimer <= 0 && !hasEnded {
+                    applyDamageToPlayer(shockDamage)
                 }
 
                 // Doble embestida encadenada en fase media o baja vida
@@ -1124,7 +1147,7 @@ final class PanicGameScene: SKScene {
             visual?.setTelegraph(active: false, distance: 0)
             let nextRem = remaining - dt
             if nextRem <= 0 {
-                enemy.stalkerPhase = .stalking(cooldown: TimeInterval.random(in: 1.15...2.05))
+                enemy.stalkerPhase = .stalking(cooldown: TimeInterval.random(in: 1.15...2.05) * cooldownScale)
             } else {
                 enemy.stalkerPhase = .recovering(remaining: nextRem)
             }
@@ -1214,6 +1237,8 @@ final class PanicGameScene: SKScene {
     private func spawnEnemy(using directive: WaveDirective, bounds: CGRect) {
         let archetype = pickArchetype(directive: directive)
         let spawnPoint = pickSpawnPoint(directive: directive, bounds: bounds)
+        let tProgress = min(1.0, max(0.0, elapsedTime / totalRunDuration))
+        let cooldownScale = max(0.58, 1.0 - tProgress * 0.40)
 
         let node: SKNode
         let hp: Int
@@ -1225,32 +1250,32 @@ final class PanicGameScene: SKScene {
         switch archetype {
         case .desollado:
             node = DesolladoVisualNode(textures: textures, sharedPaths: sharedPaths)
-            hp = 2 + (elapsedTime > 20 ? 1 : 0) + (elapsedTime > 42 ? 1 : 0) + (playerLevel >= 5 ? 1 : 0)
-            speed = CGFloat.random(in: 120...144)
+            hp = 2 + Int(elapsedTime / 16.0) + (playerLevel >= 5 ? 1 : 0)
+            speed = CGFloat.random(in: 120...144) * (1.0 + CGFloat(tProgress) * 0.16)
             radius = 12.5
-            damage = 14
-            initialAbilityCD = TimeInterval.random(in: 1.4...2.6)
+            damage = 14 + Int(elapsedTime / 20.0) * 2
+            initialAbilityCD = TimeInterval.random(in: 1.4...2.6) * cooldownScale
         case .jaula:
             node = JaulaViscerasVisualNode(textures: textures, sharedPaths: sharedPaths)
-            hp = 18 + (elapsedTime > 24 ? 4 : 0) + (elapsedTime > 44 ? 6 : 0)
-            speed = CGFloat.random(in: 62...72)
+            hp = 18 + Int(tProgress * 16.0)
+            speed = CGFloat.random(in: 62...72) * (1.0 + CGFloat(tProgress) * 0.18)
             radius = 25.5
-            damage = 24
-            initialAbilityCD = TimeInterval.random(in: 2.2...3.4)
+            damage = 24 + Int(elapsedTime / 25.0) * 3
+            initialAbilityCD = TimeInterval.random(in: 2.2...3.4) * cooldownScale
         case .martir:
             node = MartirVisualNode(textures: textures, sharedPaths: sharedPaths)
-            hp = 9 + (elapsedTime > 26 ? 3 : 0)
-            speed = CGFloat.random(in: 102...118)
+            hp = 9 + Int(tProgress * 8.0)
+            speed = CGFloat.random(in: 102...118) * (1.0 + CGFloat(tProgress) * 0.16)
             radius = 16.5
-            damage = 18
-            initialAbilityCD = TimeInterval.random(in: 1.1...1.8)
+            damage = 18 + Int(elapsedTime / 20.0) * 2
+            initialAbilityCD = TimeInterval.random(in: 1.1...1.8) * cooldownScale
         }
 
         node.position = spawnPoint
         node.zPosition = archetype == .jaula ? 3.2 : 3.0
         worldLayer.addChild(node)
 
-        enemies.append(EnemyEntity(
+        let entity = EnemyEntity(
             archetype: archetype,
             node: node,
             hp: hp,
@@ -1258,7 +1283,11 @@ final class PanicGameScene: SKScene {
             hitRadius: radius,
             contactDamage: damage,
             abilityCooldown: initialAbilityCD
-        ))
+        )
+        if archetype == .martir {
+            entity.stalkerPhase = .stalking(cooldown: initialAbilityCD)
+        }
+        enemies.append(entity)
     }
 
     private func pickArchetype(directive: WaveDirective) -> EnemyArchetype {
@@ -1317,7 +1346,7 @@ final class PanicGameScene: SKScene {
         let fallbackMsg: String
         switch mode {
         case .classic1985:
-            fallbackMsg = "Regla fija [0-12s] → Asedio inicial"
+            fallbackMsg = "Regla fija [0-15s] → Escalamiento continuo"
         case .director2026:
             fallbackMsg = "IA activa → Leyendo estrés"
         case .hybrid1985x2026:

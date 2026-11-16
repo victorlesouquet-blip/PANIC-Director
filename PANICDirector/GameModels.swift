@@ -254,7 +254,7 @@ struct RunTelemetryRecord: Codable, Identifiable, Equatable, Sendable {
     let playedAt: Date
 }
 
-struct ModeAggregateStats {
+struct ModeAggregateStats: Sendable {
     let mode: GameMode
     let runCount: Int
     let survivalRatePercent: Double
@@ -276,6 +276,57 @@ struct ModeAggregateStats {
     }
 }
 
+enum LeaderboardSortMetric: String, CaseIterable, Identifiable, Sendable {
+    case overallRanking
+    case avgKills
+    case avgTime
+    case survivalRate
+    case avgStress
+    case alphabetical
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .overallRanking: return "Ránking"
+        case .avgKills:       return "Bajas"
+        case .avgTime:        return "Tiempo"
+        case .survivalRate:   return "Superv."
+        case .avgStress:      return "Estrés"
+        case .alphabetical:   return "A–Z"
+        }
+    }
+}
+
+struct AvatarUsageStat: Identifiable, Hashable, Sendable {
+    let avatar: PlayerAvatar
+    let count: Int
+    var id: PlayerAvatar { avatar }
+}
+
+struct PlayerAggregateProfile: Identifiable, Sendable {
+    let initials: String
+    let runCount: Int
+    let survivedCount: Int
+    let survivalRatePercent: Double
+    let avgSurvivedSeconds: Double
+    let bestSurvivedSeconds: Double
+    let avgKills: Double
+    let bestKills: Int
+    let avgStress: Double
+    let avgPeakStress: Double
+    let avgMedkits: Double
+    let rankingScore: Double
+    let favoriteAvatar: PlayerAvatar?
+    let latestAvatar: PlayerAvatar?
+    let usedAvatars: [AvatarUsageStat]
+    let statsByMode: [GameMode: ModeAggregateStats]
+    let runs: [RunTelemetryRecord]
+    let lastPlayedAt: Date
+
+    var id: String { initials }
+}
+
 @Observable
 @MainActor
 final class TelemetryStore {
@@ -287,12 +338,119 @@ final class TelemetryStore {
         load()
     }
 
+    var uniquePlayerCount: Int {
+        Set(records.map { Self.normalizedInitials($0.initials) }).count
+    }
+
     func recordRun(_ record: RunTelemetryRecord) {
         records.insert(record, at: 0)
         save()
     }
 
     func stats(for mode: GameMode) -> ModeAggregateStats {
+        Self.aggregate(records: records, mode: mode)
+    }
+
+    func playerProfiles(
+        modeFilter: GameMode? = nil,
+        sortBy metric: LeaderboardSortMetric = .overallRanking
+    ) -> [PlayerAggregateProfile] {
+        let scopedRecords = modeFilter.map { mode in
+            records.filter { $0.mode == mode }
+        } ?? records
+
+        let grouped = Dictionary(grouping: scopedRecords) {
+            Self.normalizedInitials($0.initials)
+        }
+
+        let profiles = grouped.compactMap { (key, playerRuns) -> PlayerAggregateProfile? in
+            Self.buildProfile(initials: key, runs: playerRuns)
+        }
+
+        return profiles.sorted { lhs, rhs in
+            switch metric {
+            case .overallRanking:
+                if abs(lhs.rankingScore - rhs.rankingScore) > 0.01 {
+                    return lhs.rankingScore > rhs.rankingScore
+                }
+                if abs(lhs.avgSurvivedSeconds - rhs.avgSurvivedSeconds) > 0.01 {
+                    return lhs.avgSurvivedSeconds > rhs.avgSurvivedSeconds
+                }
+                return lhs.initials < rhs.initials
+
+            case .avgKills:
+                if abs(lhs.avgKills - rhs.avgKills) > 0.01 {
+                    return lhs.avgKills > rhs.avgKills
+                }
+                if lhs.bestKills != rhs.bestKills {
+                    return lhs.bestKills > rhs.bestKills
+                }
+                return lhs.initials < rhs.initials
+
+            case .avgTime:
+                if abs(lhs.avgSurvivedSeconds - rhs.avgSurvivedSeconds) > 0.01 {
+                    return lhs.avgSurvivedSeconds > rhs.avgSurvivedSeconds
+                }
+                if abs(lhs.bestSurvivedSeconds - rhs.bestSurvivedSeconds) > 0.01 {
+                    return lhs.bestSurvivedSeconds > rhs.bestSurvivedSeconds
+                }
+                return lhs.initials < rhs.initials
+
+            case .survivalRate:
+                if abs(lhs.survivalRatePercent - rhs.survivalRatePercent) > 0.01 {
+                    return lhs.survivalRatePercent > rhs.survivalRatePercent
+                }
+                if abs(lhs.avgSurvivedSeconds - rhs.avgSurvivedSeconds) > 0.01 {
+                    return lhs.avgSurvivedSeconds > rhs.avgSurvivedSeconds
+                }
+                return lhs.initials < rhs.initials
+
+            case .avgStress:
+                if abs(lhs.avgStress - rhs.avgStress) > 0.01 {
+                    return lhs.avgStress > rhs.avgStress
+                }
+                if abs(lhs.avgPeakStress - rhs.avgPeakStress) > 0.01 {
+                    return lhs.avgPeakStress > rhs.avgPeakStress
+                }
+                return lhs.initials < rhs.initials
+
+            case .alphabetical:
+                return lhs.initials < rhs.initials
+            }
+        }
+    }
+
+    func profile(forInitials initials: String) -> PlayerAggregateProfile? {
+        let normalized = Self.normalizedInitials(initials)
+        let matching = records.filter { Self.normalizedInitials($0.initials) == normalized }
+        return Self.buildProfile(initials: normalized, runs: matching)
+    }
+
+    func globalRank(forInitials initials: String) -> Int? {
+        let normalized = Self.normalizedInitials(initials)
+        let ranked = playerProfiles(modeFilter: nil, sortBy: .overallRanking)
+        guard let idx = ranked.firstIndex(where: { $0.initials == normalized }) else {
+            return nil
+        }
+        return idx + 1
+    }
+
+    func deleteRecords(at offsets: IndexSet) {
+        records.remove(atOffsets: offsets)
+        save()
+    }
+
+    func clearAll() {
+        records.removeAll()
+        UserDefaults.standard.removeObject(forKey: Self.storageKey)
+    }
+
+    private static func normalizedInitials(_ raw: String) -> String {
+        let cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        return cleaned.isEmpty ? "---" : cleaned
+    }
+
+    private static func aggregate(records: [RunTelemetryRecord], mode: GameMode) -> ModeAggregateStats {
         let filtered = records.filter { $0.mode == mode }
         guard !filtered.isEmpty else {
             return .empty(for: mode)
@@ -315,14 +473,69 @@ final class TelemetryStore {
         )
     }
 
-    func deleteRecords(at offsets: IndexSet) {
-        records.remove(atOffsets: offsets)
-        save()
-    }
+    private static func buildProfile(initials: String, runs: [RunTelemetryRecord]) -> PlayerAggregateProfile? {
+        guard !runs.isEmpty else { return nil }
+        let sortedRuns = runs.sorted { $0.playedAt > $1.playedAt }
+        let count = Double(sortedRuns.count)
+        let survivedCount = sortedRuns.filter(\.didSurvive).count
+        let survivalRatePercent = (Double(survivedCount) / count) * 100.0
 
-    func clearAll() {
-        records.removeAll()
-        UserDefaults.standard.removeObject(forKey: Self.storageKey)
+        let totalTime = sortedRuns.reduce(0.0) { $0 + $1.survivedSeconds }
+        let avgSurvived = totalTime / count
+        let bestSurvived = sortedRuns.map(\.survivedSeconds).max() ?? 0.0
+
+        let totalKills = sortedRuns.reduce(0) { $0 + $1.kills }
+        let avgKills = Double(totalKills) / count
+        let bestKills = sortedRuns.map(\.kills).max() ?? 0
+
+        let avgStress = sortedRuns.reduce(0.0) { $0 + $1.averageStress } / count
+        let avgPeakStress = sortedRuns.reduce(0.0) { $0 + $1.peakStress } / count
+        let avgMedkits = Double(sortedRuns.reduce(0) { $0 + $1.medkitsCollected }) / count
+
+        // Índice compuesto de rendimiento medio para el ránking de clase
+        let rankingScore = avgSurvived * 10.0 + avgKills * 12.0 + survivalRatePercent * 2.5
+
+        var avatarCounts: [PlayerAvatar: Int] = [:]
+        var latestIndexByAvatar: [PlayerAvatar: Int] = [:]
+        for (idx, run) in sortedRuns.enumerated() {
+            guard let av = run.avatar else { continue }
+            avatarCounts[av, default: 0] += 1
+            if latestIndexByAvatar[av] == nil {
+                latestIndexByAvatar[av] = idx
+            }
+        }
+
+        let usedAvatars = avatarCounts
+            .map { AvatarUsageStat(avatar: $0.key, count: $0.value) }
+            .sorted { lhs, rhs in
+                if lhs.count != rhs.count { return lhs.count > rhs.count }
+                return (latestIndexByAvatar[lhs.avatar] ?? Int.max) < (latestIndexByAvatar[rhs.avatar] ?? Int.max)
+            }
+
+        let modeStats = Dictionary(
+            uniqueKeysWithValues: GameMode.allCases.map { ($0, aggregate(records: sortedRuns, mode: $0)) }
+        )
+
+        return PlayerAggregateProfile(
+            initials: initials,
+            runCount: sortedRuns.count,
+            survivedCount: survivedCount,
+            survivalRatePercent: survivalRatePercent,
+            avgSurvivedSeconds: avgSurvived,
+            bestSurvivedSeconds: bestSurvived,
+            avgKills: avgKills,
+            bestKills: bestKills,
+            avgStress: avgStress,
+            avgPeakStress: avgPeakStress,
+            avgMedkits: avgMedkits,
+            rankingScore: rankingScore,
+            favoriteAvatar: usedAvatars.first?.avatar,
+            latestAvatar: sortedRuns.first(where: { $0.avatar != nil })?.avatar,
+            usedAvatars: usedAvatars,
+            statsByMode: modeStats,
+            runs: sortedRuns,
+            lastPlayedAt: sortedRuns.first?.playedAt ?? Date()
+        )
     }
 
     private func load() {
