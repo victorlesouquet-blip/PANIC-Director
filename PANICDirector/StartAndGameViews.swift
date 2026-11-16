@@ -7,9 +7,25 @@ import UIKit
 struct StartScreenView: View {
     @Binding var initialsChars: [Character]
     @Binding var selectedMode: GameMode
+    @Binding var selectedAvatar: PlayerAvatar
     let recordedCount: Int
     let onStartGame: @MainActor () -> Void
     let onOpenTelemetry: @MainActor () -> Void
+
+    private var startButtonBackground: Color {
+        switch selectedMode {
+        case .classic1985:
+            return RelicarioPalette.swOldBone
+        case .director2026:
+            return RelicarioPalette.swVermilion
+        case .hybrid1985x2026:
+            return RelicarioPalette.swGold
+        }
+    }
+
+    private var startButtonForeground: Color {
+        selectedMode == .director2026 ? RelicarioPalette.swIvory : Color.black
+    }
 
     var body: some View {
         ZStack {
@@ -17,9 +33,9 @@ struct StartScreenView: View {
                 .ignoresSafeArea()
 
             ScrollView(showsIndicators: false) {
-                VStack(spacing: 22) {
+                VStack(spacing: 16) {
                     // Cabecera Editorial Arcade
-                    VStack(spacing: 8) {
+                    VStack(spacing: 6) {
                         HStack(spacing: 8) {
                             ReliquaryEmblemView()
                                 .frame(width: 22, height: 22)
@@ -30,8 +46,8 @@ struct StartScreenView: View {
                         }
 
                         Text("PANIC DIRECTOR")
-                            .font(.system(size: 34, weight: .black, design: .monospaced))
-                            .tracking(2.5)
+                            .font(.system(size: 32, weight: .black, design: .monospaced))
+                            .tracking(2.4)
                             .foregroundStyle(RelicarioPalette.swIvory)
                             .multilineTextAlignment(.center)
 
@@ -39,10 +55,10 @@ struct StartScreenView: View {
                             .font(.subheadline.weight(.medium))
                             .foregroundStyle(RelicarioPalette.swOldBone.opacity(0.8))
                     }
-                    .padding(.top, 16)
+                    .padding(.top, 12)
 
                     // Selector de 3 Iniciales del Jugador
-                    VStack(spacing: 12) {
+                    VStack(spacing: 10) {
                         HStack {
                             Text("INICIALES DEL JUGADOR")
                                 .font(.caption.weight(.bold))
@@ -60,7 +76,7 @@ struct StartScreenView: View {
                             }
                         }
                     }
-                    .padding(16)
+                    .padding(14)
                     .background(RelicarioPalette.swCardBG)
                     .overlay(
                         RoundedRectangle(cornerRadius: 14)
@@ -68,7 +84,10 @@ struct StartScreenView: View {
                     )
                     .clipShape(RoundedRectangle(cornerRadius: 14))
 
-                    // Selector de Motor de IA (1985 vs 2026)
+                    // Selector de Avatar (12 Arquetipos sin Cursor)
+                    avatarSelectionCard
+
+                    // Selector de Motor de IA (1985 vs 2026 vs Híbrido)
                     VStack(alignment: .leading, spacing: 10) {
                         Text("SELECCIONA MOTOR DE IA")
                             .font(.caption.weight(.bold))
@@ -103,14 +122,18 @@ struct StartScreenView: View {
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 16)
-                        .background(selectedMode == .director2026 ? RelicarioPalette.swVermilion : RelicarioPalette.swOldBone)
-                        .foregroundStyle(selectedMode == .director2026 ? RelicarioPalette.swIvory : Color.black)
+                        .background(startButtonBackground)
+                        .foregroundStyle(startButtonForeground)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                     }
                     .buttonStyle(.plain)
 
                     // Acceso directo a Telemetría de Clase
-                    Button(action: onOpenTelemetry) {
+                    Button(action: {
+                        MainActor.assumeIsolated {
+                            onOpenTelemetry()
+                        }
+                    }) {
                         HStack(spacing: 8) {
                             Image(systemName: "chart.bar.xaxis")
                             Text("Telemetría de Clase (\(recordedCount))")
@@ -129,9 +152,91 @@ struct StartScreenView: View {
                     .buttonStyle(.plain)
                     .padding(.bottom, 20)
                 }
-                .padding(.horizontal, 20)
+                .padding(.horizontal, 18)
             }
         }
+    }
+
+    private var avatarSelectionCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("ELIGE TU AVATAR")
+                    .font(.caption.weight(.bold))
+                    .tracking(1.6)
+                    .foregroundStyle(RelicarioPalette.swOldBone)
+                Spacer()
+                Text("12 ARQUETIPOS")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(RelicarioPalette.swGold.opacity(0.85))
+            }
+
+            // Vista previa destacada del avatar seleccionado
+            HStack(spacing: 12) {
+                AvatarPortraitView(avatar: selectedAvatar, size: 46)
+                    .overlay(
+                        Circle()
+                            .stroke(selectedAvatar.auraSwiftColor.opacity(0.75), lineWidth: 1.4)
+                    )
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(selectedAvatar.displayName.uppercased())
+                        .font(.subheadline.monospaced().weight(.black))
+                        .foregroundStyle(RelicarioPalette.swIvory)
+                    Text(selectedAvatar.roleSubtitle)
+                        .font(.caption)
+                        .foregroundStyle(RelicarioPalette.swOldBone.opacity(0.85))
+                        .lineLimit(2)
+                }
+
+                Spacer()
+            }
+            .padding(10)
+            .background(Color.black.opacity(0.34))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(selectedAvatar.auraSwiftColor.opacity(0.42), lineWidth: 1.0)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+
+            // Rejilla 4×3 con los 12 avatares jugables
+            let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 4)
+            LazyVGrid(columns: columns, spacing: 8) {
+                ForEach(PlayerAvatar.allCases) { avatar in
+                    let isSelected = selectedAvatar == avatar
+                    Button {
+                        let gen = UIImpactFeedbackGenerator(style: .light)
+                        gen.impactOccurred(intensity: 0.75)
+                        selectedAvatar = avatar
+                    } label: {
+                        VStack(spacing: 4) {
+                            AvatarPortraitView(avatar: avatar, size: 34, showAuraRing: isSelected)
+                            Text(avatar.shortLabel)
+                                .font(.system(size: 10, weight: isSelected ? .black : .semibold, design: .monospaced))
+                                .foregroundStyle(isSelected ? RelicarioPalette.swIvory : RelicarioPalette.swOldBone.opacity(0.82))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.75)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .padding(.horizontal, 4)
+                        .background(isSelected ? avatar.auraSwiftColor.opacity(0.16) : Color.black.opacity(0.30))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10)
+                                .stroke(isSelected ? avatar.auraSwiftColor : RelicarioPalette.swCardBorder, lineWidth: isSelected ? 1.6 : 1.0)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(14)
+        .background(RelicarioPalette.swCardBG)
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(RelicarioPalette.swCardBorder, lineWidth: 1.2)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 14))
     }
 }
 
@@ -141,12 +246,12 @@ private struct ArcadeLetterWheel: View {
     private let alphabet: [Character] = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
     var body: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 5) {
             Button(action: { step(by: 1) }) {
                 Image(systemName: "chevron.up")
                     .font(.caption.weight(.bold))
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
+                    .padding(.vertical, 6)
                     .background(Color.white.opacity(0.05))
                     .foregroundStyle(RelicarioPalette.swGold)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -154,10 +259,10 @@ private struct ArcadeLetterWheel: View {
             .buttonStyle(.plain)
 
             Text(String(letter))
-                .font(.system(size: 32, weight: .black, design: .monospaced))
+                .font(.system(size: 28, weight: .black, design: .monospaced))
                 .foregroundStyle(RelicarioPalette.swIvory)
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 6)
+                .padding(.vertical, 5)
                 .background(Color.black.opacity(0.45))
                 .overlay(
                     RoundedRectangle(cornerRadius: 8)
@@ -170,7 +275,7 @@ private struct ArcadeLetterWheel: View {
                 Image(systemName: "chevron.down")
                     .font(.caption.weight(.bold))
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
+                    .padding(.vertical, 6)
                     .background(Color.white.opacity(0.05))
                     .foregroundStyle(RelicarioPalette.swGold)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -195,7 +300,11 @@ private struct ModeSelectionCard: View {
     let onSelect: @MainActor () -> Void
 
     var body: some View {
-        Button(action: onSelect) {
+        Button(action: {
+            MainActor.assumeIsolated {
+                onSelect()
+            }
+        }) {
             HStack(alignment: .top, spacing: 12) {
                 Circle()
                     .strokeBorder(isSelected ? mode.accentColor : Color.white.opacity(0.25), lineWidth: 2)
@@ -204,13 +313,17 @@ private struct ModeSelectionCard: View {
                     .padding(.top, 2)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    HStack {
+                    HStack(spacing: 8) {
                         Text(mode.displayTitle)
-                            .font(.headline.weight(.bold))
+                            .font(.subheadline.weight(.bold))
                             .foregroundStyle(RelicarioPalette.swIvory)
-                        Spacer()
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.78)
+                        Spacer(minLength: 4)
                         Text(mode.shortBadge)
                             .font(.caption2.monospaced().weight(.bold))
+                            .lineLimit(1)
+                            .fixedSize()
                             .padding(.horizontal, 7)
                             .padding(.vertical, 3)
                             .background(mode.accentColor.opacity(0.18))
@@ -223,7 +336,7 @@ private struct ModeSelectionCard: View {
                         .multilineTextAlignment(.leading)
                 }
             }
-            .padding(14)
+            .padding(13)
             .background(isSelected ? mode.accentColor.opacity(0.10) : RelicarioPalette.swCardBG)
             .overlay(
                 RoundedRectangle(cornerRadius: 12)
@@ -232,6 +345,52 @@ private struct ModeSelectionCard: View {
             .clipShape(RoundedRectangle(cornerRadius: 12))
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Vista Vectorial Procedural del Avatar (SwiftUI Canvas)
+
+@MainActor
+struct AvatarPortraitView: View {
+    let avatar: PlayerAvatar
+    let size: CGFloat
+    var showAuraRing: Bool = true
+
+    var body: some View {
+        let layers = AvatarDesignCatalog.layers(for: avatar)
+        ZStack {
+            if showAuraRing {
+                Circle()
+                    .fill(
+                        RadialGradient(
+                            colors: [avatar.auraSwiftColor.opacity(0.28), RelicarioPalette.swArenaBG.opacity(0.92)],
+                            center: .center,
+                            startRadius: 1,
+                            endRadius: size * 0.56
+                        )
+                    )
+            }
+
+            Canvas { ctx, canvasSize in
+                let scale = min(canvasSize.width, canvasSize.height) / 36.0
+                let transform = CGAffineTransform(scaleX: scale, y: -scale)
+                    .concatenating(CGAffineTransform(translationX: canvasSize.width * 0.5, y: canvasSize.height * 0.5))
+
+                for part in layers {
+                    let transformedPath = Path(part.path).applying(transform)
+                    ctx.fill(transformedPath, with: .color(Color(uiColor: part.fillColor)))
+                    if part.lineWidth > 0 && part.strokeColor != .clear {
+                        let strokeWidth = max(0.75, part.lineWidth * scale * 0.85)
+                        ctx.stroke(
+                            transformedPath,
+                            with: .color(Color(uiColor: part.strokeColor)),
+                            style: StrokeStyle(lineWidth: strokeWidth, lineCap: .round, lineJoin: .miter)
+                        )
+                    }
+                }
+            }
+        }
+        .frame(width: size, height: size)
     }
 }
 
@@ -313,17 +472,20 @@ struct GamePlayView: View {
     }
 
     private var topHUDHeader: some View {
-        HStack(spacing: 10) {
-            // Vida + Iniciales + Modo
+        HStack(spacing: 4) {
+            // Avatar + Vida + Iniciales + Modo
             VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
+                HStack(spacing: 4) {
+                    AvatarPortraitView(avatar: viewModel.avatar, size: 22)
                     Text(viewModel.initials)
                         .font(.caption.monospaced().weight(.black))
                         .foregroundStyle(RelicarioPalette.swIvory)
                         .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                     Text("NV.\(viewModel.snapshot.playerLevel)")
                         .font(.caption2.monospaced().weight(.black))
                         .lineLimit(1)
+                        .minimumScaleFactor(0.78)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 2)
                         .background(RelicarioPalette.swGold.opacity(0.22))
@@ -332,8 +494,8 @@ struct GamePlayView: View {
                     Text(viewModel.mode.shortBadge)
                         .font(.caption2.monospaced().weight(.bold))
                         .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                        .padding(.horizontal, 6)
+                        .minimumScaleFactor(0.72)
+                        .padding(.horizontal, 5)
                         .padding(.vertical, 2)
                         .background(viewModel.mode.accentColor.opacity(0.22))
                         .foregroundStyle(viewModel.mode.accentColor)
@@ -353,7 +515,7 @@ struct GamePlayView: View {
                                 .animation(.easeOut(duration: 0.12), value: viewModel.snapshot.hp)
                         }
                     }
-                    .frame(width: 84, height: 9)
+                    .frame(width: 80, height: 9)
 
                     Text("\(viewModel.snapshot.hp)")
                         .font(.caption.monospacedDigit().weight(.bold))
@@ -362,7 +524,7 @@ struct GamePlayView: View {
             }
             .allowsHitTesting(false)
 
-            Spacer()
+            Spacer(minLength: 4)
 
             // Temporizador cuenta atrás (60s)
             VStack(spacing: 1) {
@@ -374,12 +536,13 @@ struct GamePlayView: View {
                     .monospacedDigit()
                     .foregroundStyle(viewModel.snapshot.timeRemaining <= 10 ? RelicarioPalette.swVermilion : RelicarioPalette.swIvory)
             }
+            .layoutPriority(1)
             .allowsHitTesting(false)
 
-            Spacer()
+            Spacer(minLength: 4)
 
             // Contador de bajas + Botón Pausa
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 VStack(alignment: .trailing, spacing: 1) {
                     Text("BAJAS")
                         .font(.system(size: 9, weight: .bold, design: .monospaced))
@@ -388,6 +551,7 @@ struct GamePlayView: View {
                         .font(.headline.monospacedDigit().weight(.black))
                         .foregroundStyle(RelicarioPalette.swIvory)
                 }
+                .fixedSize()
                 .allowsHitTesting(false)
 
                 Button(action: { viewModel.togglePause() }) {
@@ -402,7 +566,7 @@ struct GamePlayView: View {
                 .buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .background {
             RoundedRectangle(cornerRadius: 12)
@@ -455,7 +619,7 @@ struct GamePlayView: View {
 
             HStack(spacing: 6) {
                 Circle()
-                    .fill(viewModel.mode == .director2026 ? tier.color : RelicarioPalette.swOldBone.opacity(0.6))
+                    .fill(viewModel.mode == .classic1985 ? RelicarioPalette.swOldBone.opacity(0.6) : tier.color)
                     .frame(width: 7, height: 7)
                 Text(viewModel.snapshot.directorMessage)
                     .font(.caption.monospaced().weight(.semibold))
@@ -489,9 +653,13 @@ struct GamePlayView: View {
                     .font(.title3.monospaced().weight(.black))
                     .foregroundStyle(RelicarioPalette.swIvory)
 
-                Text("\(viewModel.initials) · \(viewModel.mode.displayTitle)")
-                    .font(.caption)
-                    .foregroundStyle(RelicarioPalette.swOldBone)
+                HStack(spacing: 8) {
+                    AvatarPortraitView(avatar: viewModel.avatar, size: 24)
+                    Text("\(viewModel.initials) · \(viewModel.avatar.displayName) · \(viewModel.mode.displayTitle)")
+                        .font(.caption)
+                        .foregroundStyle(RelicarioPalette.swOldBone)
+                        .multilineTextAlignment(.center)
+                }
 
                 Button(action: { viewModel.togglePause() }) {
                     Text("REANUDAR")
@@ -520,7 +688,7 @@ struct GamePlayView: View {
                 .buttonStyle(.plain)
             }
             .padding(20)
-            .frame(maxWidth: 300)
+            .frame(maxWidth: 310)
             .background(RelicarioPalette.swCardBG)
             .overlay(
                 RoundedRectangle(cornerRadius: 16)

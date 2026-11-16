@@ -46,9 +46,10 @@ enum RelicarioPalette {
 
 // MARK: - Modos, Arquetipos y Niveles de Estrés
 
-enum GameMode: String, Codable, CaseIterable, Identifiable {
+enum GameMode: String, Codable, CaseIterable, Identifiable, Sendable {
     case classic1985
     case director2026
+    case hybrid1985x2026
 
     var id: String { rawValue }
 
@@ -58,6 +59,8 @@ enum GameMode: String, Codable, CaseIterable, Identifiable {
             return "Modo 1985 (Clásico)"
         case .director2026:
             return "Modo 2026 (IA Directora)"
+        case .hybrid1985x2026:
+            return "Modo Híbrido (1985 × 2026)"
         }
     }
 
@@ -67,15 +70,30 @@ enum GameMode: String, Codable, CaseIterable, Identifiable {
             return "1985 · FIJO"
         case .director2026:
             return "2026 · IA"
+        case .hybrid1985x2026:
+            return "85 × 26 · MIX"
+        }
+    }
+
+    var tableHeader: String {
+        switch self {
+        case .classic1985:
+            return "1985"
+        case .director2026:
+            return "2026"
+        case .hybrid1985x2026:
+            return "HÍBR."
         }
     }
 
     var subtitle: String {
         switch self {
         case .classic1985:
-            return "Reglas fijas y oleadas matemáticas que ignoran al jugador"
+            return "Reglas fijas y oleadas implacables que ignoran al jugador"
         case .director2026:
             return "IA Directora que mide tu estrés en vivo y moldea la partida"
+        case .hybrid1985x2026:
+            return "Oleadas fijas y ráfagas de reloj 1985 mutadas por la IA Directora 2026"
         }
     }
 
@@ -85,7 +103,90 @@ enum GameMode: String, Codable, CaseIterable, Identifiable {
             return RelicarioPalette.swOldBone
         case .director2026:
             return RelicarioPalette.swVermilion
+        case .hybrid1985x2026:
+            return RelicarioPalette.swGold
         }
+    }
+}
+
+// MARK: - 12 Avatares Seleccionables del Jugador
+
+enum PlayerAvatar: String, Codable, CaseIterable, Identifiable, Sendable {
+    case penitente
+    case inquisidor
+    case serafin
+    case cuervo
+    case verdugo
+    case oraculo
+    case golem
+    case espectro
+    case automata
+    case templario
+    case brujo
+    case heraldo
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .penitente:  return "Penitente"
+        case .inquisidor: return "Inquisidor"
+        case .serafin:    return "Serafín"
+        case .cuervo:     return "Cuervo"
+        case .verdugo:    return "Verdugo"
+        case .oraculo:    return "Oráculo"
+        case .golem:      return "Gólem Óseo"
+        case .espectro:   return "Espectro"
+        case .automata:   return "Autómata"
+        case .templario:  return "Templario"
+        case .brujo:      return "Brujo"
+        case .heraldo:    return "Heraldo"
+        }
+    }
+
+    var shortLabel: String {
+        switch self {
+        case .golem: return "Gólem"
+        default:     return displayName
+        }
+    }
+
+    var roleSubtitle: String {
+        switch self {
+        case .penitente:  return "Capucha de ceniza y ojo consagrado"
+        case .inquisidor: return "Cazador de herejías con doble sello"
+        case .serafin:    return "Alas de hueso y tercer ojo áureo"
+        case .cuervo:     return "Máscara de plaga y lentes carmesí"
+        case .verdugo:    return "Yelmo de hierro y visera de brasa"
+        case .oraculo:    return "Tiara lunar y visión espectral"
+        case .golem:      return "Cráneo astado forjado en osario"
+        case .espectro:   return "Sudario errante de tres miradas"
+        case .automata:   return "Astrolabio viviente de bronce"
+        case .templario:  return "Gran yelmo sellado en oro y sangre"
+        case .brujo:      return "Corona torcida de fuego abisal"
+        case .heraldo:    return "Efigie nocturna bajo media luna"
+        }
+    }
+
+    var auraUIColor: UIColor {
+        switch self {
+        case .penitente:  return RelicarioPalette.coldSilver
+        case .inquisidor: return RelicarioPalette.graceJade
+        case .serafin:    return RelicarioPalette.liturgicalGold
+        case .cuervo:     return RelicarioPalette.vermilion
+        case .verdugo:    return RelicarioPalette.emberOrange
+        case .oraculo:    return RelicarioPalette.coldSilver
+        case .golem:      return RelicarioPalette.vermilion
+        case .espectro:   return RelicarioPalette.graceJade
+        case .automata:   return RelicarioPalette.liturgicalGold
+        case .templario:  return RelicarioPalette.liturgicalGold
+        case .brujo:      return RelicarioPalette.vermilion
+        case .heraldo:    return RelicarioPalette.coldSilver
+        }
+    }
+
+    var auraSwiftColor: Color {
+        Color(uiColor: auraUIColor)
     }
 }
 
@@ -95,7 +196,7 @@ enum EnemyArchetype: String, Codable, CaseIterable {
     case martir    // Acosador impredecible: Mártir Descoyuntado (silueta torcida con halo roto y láser)
 }
 
-enum StressTier: Int, Codable, Comparable {
+enum StressTier: Int, Codable, Comparable, Sendable {
     case bajo = 0
     case optimo = 1
     case alto = 2
@@ -139,9 +240,10 @@ enum StressTier: Int, Codable, Comparable {
 
 // MARK: - Telemetría de Partida y Estadísticas de Clase
 
-struct RunTelemetryRecord: Codable, Identifiable, Equatable {
+struct RunTelemetryRecord: Codable, Identifiable, Equatable, Sendable {
     let id: UUID
     let initials: String
+    let avatar: PlayerAvatar?
     let mode: GameMode
     let survivedSeconds: Double
     let didSurvive: Bool

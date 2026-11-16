@@ -33,6 +33,7 @@ private struct RootCoordinatorView: View {
     @State private var telemetryStore = TelemetryStore()
     @State private var initialsChars: [Character] = ["V", "L", "F"]
     @State private var selectedMode: GameMode = .director2026
+    @State private var selectedAvatar: PlayerAvatar = .penitente
     @State private var screen: AppScreen = .start
 
     private var currentInitials: String {
@@ -46,6 +47,7 @@ private struct RootCoordinatorView: View {
                 StartScreenView(
                     initialsChars: $initialsChars,
                     selectedMode: $selectedMode,
+                    selectedAvatar: $selectedAvatar,
                     recordedCount: telemetryStore.records.count,
                     onStartGame: startNewRun,
                     onOpenTelemetry: {
@@ -85,6 +87,7 @@ private struct RootCoordinatorView: View {
         let session = GameSessionViewModel(
             initials: currentInitials,
             mode: selectedMode,
+            avatar: selectedAvatar,
             onFinish: { record in
                 telemetryStore.recordRun(record)
                 screen = .results(lastRecord: record)

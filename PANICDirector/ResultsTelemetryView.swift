@@ -11,6 +11,7 @@ struct ResultsTelemetryView: View {
 
     private var stats1985: ModeAggregateStats { store.stats(for: .classic1985) }
     private var stats2026: ModeAggregateStats { store.stats(for: .director2026) }
+    private var statsHybrid: ModeAggregateStats { store.stats(for: .hybrid1985x2026) }
 
     var body: some View {
         ZStack {
@@ -56,7 +57,11 @@ struct ResultsTelemetryView: View {
         let statusColor = record.didSurvive ? RelicarioPalette.swGraceJade : RelicarioPalette.swVermilion
 
         return VStack(spacing: 14) {
-            HStack {
+            HStack(spacing: 8) {
+                if let avatar = record.avatar {
+                    AvatarPortraitView(avatar: avatar, size: 28)
+                }
+
                 Text(record.initials)
                     .font(.caption.monospaced().weight(.black))
                     .padding(.horizontal, 8)
@@ -68,6 +73,8 @@ struct ResultsTelemetryView: View {
                 Text(record.mode.displayTitle)
                     .font(.caption.weight(.bold))
                     .foregroundStyle(record.mode.accentColor)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
 
                 Spacer()
 
@@ -136,6 +143,8 @@ struct ResultsTelemetryView: View {
             Text(title)
                 .font(.system(size: 9, weight: .bold, design: .monospaced))
                 .foregroundStyle(RelicarioPalette.swOldBone.opacity(0.75))
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
             Text(value)
                 .font(.subheadline.monospacedDigit().weight(.black))
                 .foregroundStyle(color)
@@ -146,34 +155,41 @@ struct ResultsTelemetryView: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
-    // MARK: - Tabla Comparativa (1985 vs 2026)
+    // MARK: - Tabla Comparativa (1985 vs 2026 vs Híbrido)
 
     private var classComparisonSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("COMPARATIVA 1985 vs 2026")
+                Text("COMPARATIVA 1985 · 2026 · HÍBR.")
                     .font(.caption.weight(.bold))
-                    .tracking(1.5)
+                    .tracking(1.3)
                     .foregroundStyle(RelicarioPalette.swGold)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
                 Spacer()
-                Text("TELEMETRÍA EN VIVO")
+                Text("EN VIVO")
                     .font(.caption2.monospaced())
                     .foregroundStyle(RelicarioPalette.swOldBone.opacity(0.65))
             }
 
-            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 10) {
+            Grid(alignment: .leading, horizontalSpacing: 6, verticalSpacing: 10) {
                 GridRow {
                     Text("MÉTRICA")
                         .font(.caption2.monospaced().weight(.bold))
                         .foregroundStyle(RelicarioPalette.swOldBone.opacity(0.7))
-                    Text("1985 (FIJO)")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Text(GameMode.classic1985.tableHeader)
                         .font(.caption2.monospaced().weight(.black))
                         .foregroundStyle(RelicarioPalette.swOldBone)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                    Text("2026 (IA)")
+                        .frame(width: 48, alignment: .trailing)
+                    Text(GameMode.director2026.tableHeader)
                         .font(.caption2.monospaced().weight(.black))
                         .foregroundStyle(RelicarioPalette.swVermilion)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .frame(width: 48, alignment: .trailing)
+                    Text(GameMode.hybrid1985x2026.tableHeader)
+                        .font(.caption2.monospaced().weight(.black))
+                        .foregroundStyle(RelicarioPalette.swGold)
+                        .frame(width: 48, alignment: .trailing)
                 }
 
                 Divider().overlay(RelicarioPalette.swCardBorder)
@@ -181,32 +197,38 @@ struct ResultsTelemetryView: View {
                 comparisonRow(
                     label: "Partidas",
                     val1985: "\(stats1985.runCount)",
-                    val2026: "\(stats2026.runCount)"
+                    val2026: "\(stats2026.runCount)",
+                    valHybrid: "\(statsHybrid.runCount)"
                 )
                 comparisonRow(
-                    label: "Supervivencia 60s",
+                    label: "Superv. 60s",
                     val1985: stats1985.runCount > 0 ? String(format: "%.0f%%", stats1985.survivalRatePercent) : "—",
-                    val2026: stats2026.runCount > 0 ? String(format: "%.0f%%", stats2026.survivalRatePercent) : "—"
+                    val2026: stats2026.runCount > 0 ? String(format: "%.0f%%", stats2026.survivalRatePercent) : "—",
+                    valHybrid: statsHybrid.runCount > 0 ? String(format: "%.0f%%", statsHybrid.survivalRatePercent) : "—"
                 )
                 comparisonRow(
                     label: "Tiempo medio",
                     val1985: stats1985.runCount > 0 ? String(format: "%.1fs", stats1985.avgSurvivedSeconds) : "—",
-                    val2026: stats2026.runCount > 0 ? String(format: "%.1fs", stats2026.avgSurvivedSeconds) : "—"
+                    val2026: stats2026.runCount > 0 ? String(format: "%.1fs", stats2026.avgSurvivedSeconds) : "—",
+                    valHybrid: statsHybrid.runCount > 0 ? String(format: "%.1fs", statsHybrid.avgSurvivedSeconds) : "—"
                 )
                 comparisonRow(
                     label: "Bajas medias",
                     val1985: stats1985.runCount > 0 ? String(format: "%.1f", stats1985.avgKills) : "—",
-                    val2026: stats2026.runCount > 0 ? String(format: "%.1f", stats2026.avgKills) : "—"
+                    val2026: stats2026.runCount > 0 ? String(format: "%.1f", stats2026.avgKills) : "—",
+                    valHybrid: statsHybrid.runCount > 0 ? String(format: "%.1f", statsHybrid.avgKills) : "—"
                 )
                 comparisonRow(
                     label: "Estrés medio",
                     val1985: stats1985.runCount > 0 ? String(format: "%.0f%%", stats1985.avgStress) : "—",
-                    val2026: stats2026.runCount > 0 ? String(format: "%.0f%%", stats2026.avgStress) : "—"
+                    val2026: stats2026.runCount > 0 ? String(format: "%.0f%%", stats2026.avgStress) : "—",
+                    valHybrid: statsHybrid.runCount > 0 ? String(format: "%.0f%%", statsHybrid.avgStress) : "—"
                 )
                 comparisonRow(
-                    label: "Estrés pico medio",
+                    label: "Estrés pico",
                     val1985: stats1985.runCount > 0 ? String(format: "%.0f%%", stats1985.avgPeakStress) : "—",
-                    val2026: stats2026.runCount > 0 ? String(format: "%.0f%%", stats2026.avgPeakStress) : "—"
+                    val2026: stats2026.runCount > 0 ? String(format: "%.0f%%", stats2026.avgPeakStress) : "—",
+                    valHybrid: statsHybrid.runCount > 0 ? String(format: "%.0f%%", statsHybrid.avgPeakStress) : "—"
                 )
             }
         }
@@ -219,19 +241,32 @@ struct ResultsTelemetryView: View {
         .clipShape(RoundedRectangle(cornerRadius: 14))
     }
 
-    private func comparisonRow(label: String, val1985: String, val2026: String) -> some View {
+    private func comparisonRow(label: String, val1985: String, val2026: String, valHybrid: String) -> some View {
         GridRow {
             Text(label)
                 .font(.caption.weight(.medium))
                 .foregroundStyle(RelicarioPalette.swIvory.opacity(0.9))
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+                .frame(maxWidth: .infinity, alignment: .leading)
             Text(val1985)
-                .font(.subheadline.monospacedDigit().weight(.bold))
+                .font(.caption.monospacedDigit().weight(.bold))
                 .foregroundStyle(RelicarioPalette.swOldBone)
-                .frame(maxWidth: .infinity, alignment: .trailing)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(width: 48, alignment: .trailing)
             Text(val2026)
-                .font(.subheadline.monospacedDigit().weight(.bold))
+                .font(.caption.monospacedDigit().weight(.bold))
                 .foregroundStyle(RelicarioPalette.swIvory)
-                .frame(maxWidth: .infinity, alignment: .trailing)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(width: 48, alignment: .trailing)
+            Text(valHybrid)
+                .font(.caption.monospacedDigit().weight(.bold))
+                .foregroundStyle(RelicarioPalette.swGold)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(width: 48, alignment: .trailing)
         }
     }
 
@@ -239,19 +274,35 @@ struct ResultsTelemetryView: View {
 
     private var classInsightBanner: some View {
         let message: String
-        if stats1985.runCount == 0 || stats2026.runCount == 0 {
-            message = "Registra partidas en ambos modos con varios compañeros para proyectar la comparativa real 1985 vs 2026."
-        } else {
+        if stats1985.runCount > 0 && stats2026.runCount > 0 {
             let deltaSurvival = stats2026.survivalRatePercent - stats1985.survivalRatePercent
             let sign = deltaSurvival >= 0 ? "+" : ""
-            message = String(
-                format: "Con %d partidas registradas: el Modo 2026 logra %@%.0f pp en supervivencia manteniendo un estrés medio del %.0f%% frente al %.0f%% del Modo 1985.",
+            let base = String(
+                format: "Con %d partidas: el Modo 2026 logra %@%.0f pp en supervivencia con %.0f%% de estrés medio frente al %.0f%% del Modo 1985.",
                 store.records.count,
                 sign,
                 deltaSurvival,
                 stats2026.avgStress,
                 stats1985.avgStress
             )
+            if statsHybrid.runCount > 0 {
+                message = base + String(
+                    format: " En Híbrido (%.0f%% superv., %.0f%% estrés) la mezcla eleva el castigo.",
+                    statsHybrid.survivalRatePercent,
+                    statsHybrid.avgStress
+                )
+            } else {
+                message = base
+            }
+        } else if statsHybrid.runCount > 0 && (stats1985.runCount > 0 || stats2026.runCount > 0) {
+            message = String(
+                format: "El Modo Híbrido registra %.0f%% de supervivencia y %.0f%% de estrés medio (%d partidas). Completa pruebas en los 3 motores para la comparativa completa.",
+                statsHybrid.survivalRatePercent,
+                statsHybrid.avgStress,
+                statsHybrid.runCount
+            )
+        } else {
+            message = "Registra partidas en los modos 1985, 2026 e Híbrido con varios compañeros para proyectar la comparativa real en clase."
         }
 
         return HStack(alignment: .top, spacing: 10) {
@@ -304,14 +355,29 @@ struct ResultsTelemetryView: View {
             } else {
                 VStack(spacing: 8) {
                     ForEach(store.records) { rec in
-                        HStack(spacing: 10) {
+                        HStack(spacing: 8) {
+                            if let avatar = rec.avatar {
+                                AvatarPortraitView(avatar: avatar, size: 22, showAuraRing: false)
+                            } else {
+                                Circle()
+                                    .fill(Color.white.opacity(0.08))
+                                    .frame(width: 22, height: 22)
+                                    .overlay(
+                                        Text("·")
+                                            .font(.caption2.bold())
+                                            .foregroundStyle(RelicarioPalette.swOldBone.opacity(0.6))
+                                    )
+                            }
+
                             Text(rec.initials)
                                 .font(.caption.monospaced().weight(.black))
-                                .frame(width: 38, alignment: .leading)
+                                .frame(width: 32, alignment: .leading)
                                 .foregroundStyle(RelicarioPalette.swIvory)
 
                             Text(rec.mode.shortBadge)
                                 .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.75)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 3)
                                 .background(rec.mode.accentColor.opacity(0.18))
@@ -327,14 +393,14 @@ struct ResultsTelemetryView: View {
                             Text("\(rec.kills)B")
                                 .font(.caption.monospacedDigit())
                                 .foregroundStyle(RelicarioPalette.swColdSilver)
-                                .frame(width: 34, alignment: .trailing)
+                                .frame(width: 32, alignment: .trailing)
 
                             Text("\(Int(rec.averageStress.rounded()))%")
                                 .font(.caption.monospacedDigit().weight(.semibold))
                                 .foregroundStyle(StressTier.from(index: rec.averageStress).color)
-                                .frame(width: 36, alignment: .trailing)
+                                .frame(width: 34, alignment: .trailing)
                         }
-                        .padding(.horizontal, 12)
+                        .padding(.horizontal, 10)
                         .padding(.vertical, 9)
                         .background(RelicarioPalette.swCardBG)
                         .overlay(
@@ -352,7 +418,11 @@ struct ResultsTelemetryView: View {
 
     private var bottomActionBar: some View {
         HStack(spacing: 10) {
-            Button(action: onReturnToStart) {
+            Button(action: {
+                MainActor.assumeIsolated {
+                    onReturnToStart()
+                }
+            }) {
                 Text("CAMBIAR JUGADOR")
                     .font(.caption.monospaced().weight(.bold))
                     .frame(maxWidth: .infinity)
@@ -368,7 +438,11 @@ struct ResultsTelemetryView: View {
             .buttonStyle(.plain)
 
             if lastRecord != nil {
-                Button(action: onPlayAgainSameSetup) {
+                Button(action: {
+                    MainActor.assumeIsolated {
+                        onPlayAgainSameSetup()
+                    }
+                }) {
                     Text("REPETIR (60s)")
                         .font(.caption.monospaced().weight(.black))
                         .frame(maxWidth: .infinity)
