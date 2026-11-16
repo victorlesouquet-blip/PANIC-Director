@@ -306,6 +306,15 @@ final class HapticManager {
         notification.prepare()
     }
 
+    func triggerLevelUp() {
+        mediumImpact.impactOccurred(intensity: 0.9)
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(70))
+            self?.rigidImpact.impactOccurred(intensity: 1.0)
+            self?.rigidImpact.prepare()
+        }
+    }
+
     func triggerRunEnd(survived: Bool) {
         notification.notificationOccurred(survived ? .success : .error)
         notification.prepare()

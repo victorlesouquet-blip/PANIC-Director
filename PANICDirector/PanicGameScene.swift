@@ -6,11 +6,12 @@ import UIKit
 
 // MARK: - ViewModel de Sesión Activa (Puente SwiftUI <-> SpriteKit)
 
-struct GameHUDSnapshot {
+struct GameHUDSnapshot: Sendable {
     var timeRemaining: TimeInterval = 60.0
     var hp: Int = 100
     var maxHP: Int = 100
     var kills: Int = 0
+    var playerLevel: Int = 1
     var stressIndex: Double = 18.0
     var stressTier: StressTier = .bajo
     var directorMessage: String = "Calibrando arena..."
@@ -99,8 +100,8 @@ struct SpriteKitHostView: UIViewRepresentable {
 
 final class PanicGameScene: SKScene {
     // Callbacks hacia SwiftUI (@MainActor)
-    var onSnapshotUpdate: (@MainActor (GameHUDSnapshot) -> Void)?
-    var onRunCompleted: (@MainActor (RunTelemetryRecord) -> Void)?
+    var onSnapshotUpdate: (@MainActor @Sendable (GameHUDSnapshot) -> Void)?
+    var onRunCompleted: (@MainActor @Sendable (RunTelemetryRecord) -> Void)?
 
     private let mode: GameMode
     private let initials: String
@@ -124,15 +125,19 @@ final class PanicGameScene: SKScene {
     private var joystickOrigin: CGPoint = .zero
     private var moveInput: CGVector = .zero
 
-    // Estado del jugador
+    // Estado del jugador y progresión de XP
     private var playerNode = SKNode()
+    private var playerXPBar = PlayerXPBarNode()
     private var playerPos: CGPoint = .zero
     private var playerVelocity: CGVector = .zero
     private var playerHP: Int = 100
     private let playerMaxHP: Int = 100
     private var invulnerabilityTimer: TimeInterval = 0
     private var fireTimer: TimeInterval = 0
-    private let playerSpeed: CGFloat = 208.0
+    private let basePlayerSpeed: CGFloat = 208.0
+    private var playerLevel: Int = 1
+    private var currentXP: Int = 0
+    private var xpToNextLevel: Int = 40
 
     // Motores de IA y estrés
     private let stressTracker = StressMetricsTracker()
@@ -144,6 +149,7 @@ final class PanicGameScene: SKScene {
         }
     }()
     private var previousStressTier: StressTier = .bajo
+    private var lastDirective: WaveDirective?
 
     // Entidades activas
     private var enemies: [EnemyEntity] = []
@@ -207,11 +213,13 @@ final class PanicGameScene: SKScene {
         let node: SKShapeNode
         var velocity: CGVector
         var remainingLife: TimeInterval
+        let damage: Int
 
-        init(node: SKShapeNode, velocity: CGVector, remainingLife: TimeInterval) {
+        init(node: SKShapeNode, velocity: CGVector, remainingLife: TimeInterval, damage: Int) {
             self.node = node
             self.velocity = velocity
             self.remainingLife = remainingLife
+            self.damage = damage
         }
     }
 
@@ -239,8 +247,16 @@ final class PanicGameScene: SKScene {
     required init?(coder aDecoder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func updateSafeMargins(top: CGFloat, bottom: CGFloat) {
-        safeTopInset = top
-        safeBottomInset = bottom
+        let uiTop = view?.safeAreaInsets.top ?? 0
+        let uiBottom = view?.safeAreaInsets.bottom ?? 0
+        safeTopInset = max(top, uiTop)
+        safeBottomInset = max(bottom, uiBottom)
+        guard isSetupComplete else { return }
+        let bounds = playableBounds()
+        playerPos.x = min(max(playerPos.x, bounds.minX), bounds.maxX)
+        playerPos.y = min(max(playerPos.y, bounds.minY), bounds.maxY)
+        playerNode.position = playerPos
+        playerXPBar.position = CGPoint(x: playerPos.x, y: playerPos.y + 28)
     }
 
     func setUserPaused(_ paused: Bool) {
@@ -261,6 +277,13 @@ final class PanicGameScene: SKScene {
     override func didMove(to view: SKView) {
         guard !isSetupComplete else { return }
         isSetupComplete = true
+
+        if view.safeAreaInsets.top > 0 {
+            safeTopInset = view.safeAreaInsets.top
+        }
+        if view.safeAreaInsets.bottom > 0 {
+            safeBottomInset = view.safeAreaInsets.bottom
+        }
 
         _ = textures
         _ = sharedPaths
@@ -285,6 +308,11 @@ final class PanicGameScene: SKScene {
         playerPos = CGPoint(x: bounds.midX, y: bounds.midY)
         playerNode.position = playerPos
 
+        playerXPBar.zPosition = 8.0
+        playerXPBar.position = CGPoint(x: playerPos.x, y: playerPos.y + 28)
+        playerXPBar.updateXP(progress: 0.0, level: playerLevel)
+        worldLayer.addChild(playerXPBar)
+
         stressTracker.reset()
         waveDirector.reset()
 
@@ -307,12 +335,13 @@ final class PanicGameScene: SKScene {
             playerPos.y = min(max(playerPos.y, bounds.minY), bounds.maxY)
             playerNode.position = playerPos
         }
+        playerXPBar.position = CGPoint(x: playerPos.x, y: playerPos.y + 28)
     }
 
     // MARK: - Geometría de Arena y Joystick
 
     private func playableBounds() -> CGRect {
-        let topMargin = max(145, safeTopInset + 140)
+        let topMargin = max(190, safeTopInset + 188)
         let bottomMargin = max(28, safeBottomInset + 16)
         let sideMargin: CGFloat = 18
         let w = max(120, size.width - sideMargin * 2)
@@ -479,12 +508,15 @@ final class PanicGameScene: SKScene {
             playerNode.alpha = 1.0
         }
 
-        // 1. Movimiento del jugador
+        // 1. Movimiento del jugador (escala agilidad con el nivel)
         let bounds = playableBounds()
-        playerVelocity = CGVector(dx: moveInput.dx * playerSpeed, dy: moveInput.dy * playerSpeed)
+        let speedBonus: CGFloat = 1.0 + min(0.30, CGFloat(playerLevel - 1) * 0.05)
+        let effectiveSpeed = basePlayerSpeed * speedBonus
+        playerVelocity = CGVector(dx: moveInput.dx * effectiveSpeed, dy: moveInput.dy * effectiveSpeed)
         playerPos.x = min(max(playerPos.x + playerVelocity.dx * CGFloat(dt), bounds.minX), bounds.maxX)
         playerPos.y = min(max(playerPos.y + playerVelocity.dy * CGFloat(dt), bounds.minY), bounds.maxY)
         playerNode.position = playerPos
+        playerXPBar.position = CGPoint(x: playerPos.x, y: playerPos.y + 28)
 
         // 2. Medición espacial y actualización del Índice de Estrés en vivo
         var nearestDist: CGFloat = 999
@@ -527,6 +559,7 @@ final class PanicGameScene: SKScene {
             activeEnemyCount: enemies.count,
             activeMedkitCount: medkits.count
         ))
+        lastDirective = directive
 
         if directive.spawnEmergencyMedkit {
             spawnMedkit(biasAhead: directive.medkitBiasAhead, bounds: bounds)
@@ -580,21 +613,54 @@ final class PanicGameScene: SKScene {
         playerNode.zRotation = angle
 
         guard fireTimer <= 0 else { return }
-        fireTimer = 0.23
+        fireTimer = max(0.11, 0.24 * pow(0.90, Double(playerLevel - 1)))
 
-        let shard = SKShapeNode(path: sharedPaths.projectileShard)
-        shard.fillColor = RelicarioPalette.projectileCore
-        shard.strokeColor = RelicarioPalette.projectileTrail
-        shard.lineWidth = 1.4
-        shard.blendMode = .add
-        shard.position = CGPoint(x: playerPos.x + cos(angle) * 14, y: playerPos.y + sin(angle) * 14)
-        shard.zRotation = angle
-        shard.zPosition = 3.5
-        worldLayer.addChild(shard)
+        let damage = 1 + (playerLevel >= 3 ? 1 : 0) + (playerLevel >= 5 ? 1 : 0)
+        let spreadOffsets: [CGFloat]
+        switch playerLevel {
+        case 1:
+            spreadOffsets = [0.0]
+        case 2...3:
+            spreadOffsets = [-0.08, 0.08]
+        case 4...5:
+            spreadOffsets = [-0.13, 0.0, 0.13]
+        default:
+            spreadOffsets = [-0.16, -0.055, 0.055, 0.16]
+        }
 
-        let speed: CGFloat = 590.0
-        let vel = CGVector(dx: cos(angle) * speed, dy: sin(angle) * speed)
-        projectiles.append(ProjectileEntity(node: shard, velocity: vel, remainingLife: 1.05))
+        let tierStep = CGFloat(min(5, playerLevel - 1))
+        let shardScale: CGFloat = 1.0 + tierStep * 0.07
+        let speed: CGFloat = 590.0 + tierStep * 28.0
+
+        let fillTint: UIColor
+        let strokeTint: UIColor
+        if playerLevel >= 5 {
+            fillTint = RelicarioPalette.liturgicalGold
+            strokeTint = RelicarioPalette.ivory
+        } else if playerLevel >= 3 {
+            fillTint = RelicarioPalette.coldSilver
+            strokeTint = RelicarioPalette.projectileCore
+        } else {
+            fillTint = RelicarioPalette.projectileCore
+            strokeTint = RelicarioPalette.projectileTrail
+        }
+
+        for offset in spreadOffsets {
+            let shotAngle = angle + offset
+            let shard = SKShapeNode(path: sharedPaths.projectileShard)
+            shard.fillColor = fillTint
+            shard.strokeColor = strokeTint
+            shard.lineWidth = 1.4
+            shard.blendMode = .add
+            shard.setScale(shardScale)
+            shard.position = CGPoint(x: playerPos.x + cos(shotAngle) * 14, y: playerPos.y + sin(shotAngle) * 14)
+            shard.zRotation = shotAngle
+            shard.zPosition = 3.5
+            worldLayer.addChild(shard)
+
+            let vel = CGVector(dx: cos(shotAngle) * speed, dy: sin(shotAngle) * speed)
+            projectiles.append(ProjectileEntity(node: shard, velocity: vel, remainingLife: 1.05, damage: damage))
+        }
 
         MainActor.assumeIsolated {
             HapticManager.shared.triggerShoot()
@@ -634,17 +700,18 @@ final class PanicGameScene: SKScene {
             }
 
             // Impacto contra enemigos
+            let hitPadding: CGFloat = 6.5 + CGFloat(proj.damage - 1) * 1.2
             var hitIndex: Int?
             for (idx, enemy) in enemies.enumerated() {
                 let d = hypot(enemy.node.position.x - nextPos.x, enemy.node.position.y - nextPos.y)
-                if d <= enemy.hitRadius + 6.5 {
+                if d <= enemy.hitRadius + hitPadding {
                     hitIndex = idx
                     break
                 }
             }
 
             if let idx = hitIndex {
-                applyHit(toEnemyAt: idx, impactVelocity: proj.velocity, impactPoint: nextPos)
+                applyHit(toEnemyAt: idx, damage: proj.damage, impactVelocity: proj.velocity, impactPoint: nextPos)
                 proj.node.removeFromParent()
             } else {
                 survivors.append(proj)
@@ -654,9 +721,9 @@ final class PanicGameScene: SKScene {
         projectiles = survivors
     }
 
-    private func applyHit(toEnemyAt index: Int, impactVelocity: CGVector, impactPoint: CGPoint) {
+    private func applyHit(toEnemyAt index: Int, damage: Int, impactVelocity: CGVector, impactPoint: CGPoint) {
         let enemy = enemies[index]
-        enemy.hp -= 1
+        enemy.hp -= damage
 
         let sparkColor: UIColor = (enemy.archetype == .jaula) ? RelicarioPalette.oldBone : RelicarioPalette.vermilion
         worldLayer.addChild(ParticleFactory.makeSparkBurst(at: impactPoint, color: sparkColor, textures: textures))
@@ -684,22 +751,54 @@ final class PanicGameScene: SKScene {
         if enemy.hp <= 0 {
             let deathColor: UIColor
             let count: Int
+            let xpValue: Int
             switch enemy.archetype {
             case .desollado:
                 deathColor = RelicarioPalette.vermilion
                 count = 11
+                xpValue = 10
             case .jaula:
                 deathColor = RelicarioPalette.liturgicalGold
                 count = 20
+                xpValue = 55
                 shakeWorld(amplitude: 4.5)
             case .martir:
                 deathColor = RelicarioPalette.liturgicalGold
                 count = 15
+                xpValue = 25
             }
             worldLayer.addChild(ParticleFactory.makeDeathBurst(at: enemy.node.position, color: deathColor, count: count, textures: textures))
             enemy.node.removeFromParent()
             enemies.remove(at: index)
             kills += 1
+            grantXP(xpValue)
+        }
+    }
+
+    private func xpRequired(forLevel level: Int) -> Int {
+        let step = max(0, level - 1)
+        return 25 + level * 15 + step * step * 5
+    }
+
+    private func grantXP(_ amount: Int) {
+        currentXP += amount
+        var didLevelUp = false
+        while currentXP >= xpToNextLevel {
+            currentXP -= xpToNextLevel
+            playerLevel += 1
+            xpToNextLevel = xpRequired(forLevel: playerLevel)
+            didLevelUp = true
+        }
+
+        let progress = Double(currentXP) / Double(max(1, xpToNextLevel))
+        playerXPBar.updateXP(progress: progress, level: playerLevel, leveledUp: didLevelUp)
+
+        if didLevelUp {
+            playerXPBar.playLevelUpEffect(level: playerLevel, in: worldLayer, playerPos: playerPos, textures: textures)
+            MainActor.assumeIsolated {
+                HapticManager.shared.triggerLevelUp()
+            }
+            publishHUDNow(directive: nil)
         }
     }
 
@@ -1057,19 +1156,22 @@ final class PanicGameScene: SKScene {
 
     private func publishHUDNow(directive: WaveDirective?) {
         guard !hasEnded else { return }
+        let activeDirective = directive ?? lastDirective
         let snap = GameHUDSnapshot(
             timeRemaining: max(0, totalRunDuration - elapsedTime),
             hp: playerHP,
             maxHP: playerMaxHP,
             kills: kills,
+            playerLevel: playerLevel,
             stressIndex: stressTracker.currentStress,
             stressTier: stressTracker.currentTier,
-            directorMessage: directive?.microMessage ?? (mode == .classic1985 ? "Regla fija [0-15s] → Oleada inicial" : "IA activa → Leyendo estrés"),
-            isInterventionActive: directive?.isInterventionActive ?? false,
+            directorMessage: activeDirective?.microMessage ?? (mode == .classic1985 ? "Regla fija [0-15s] → Oleada inicial" : "IA activa → Leyendo estrés"),
+            isInterventionActive: activeDirective?.isInterventionActive ?? false,
             medkitsCollected: medkitsCollected
         )
+        let updateCallback = onSnapshotUpdate
         MainActor.assumeIsolated {
-            onSnapshotUpdate?(snap)
+            updateCallback?(snap)
         }
     }
 
@@ -1084,6 +1186,7 @@ final class PanicGameScene: SKScene {
             hp: playerHP,
             maxHP: playerMaxHP,
             kills: kills,
+            playerLevel: playerLevel,
             stressIndex: stressTracker.currentStress,
             stressTier: stressTracker.currentTier,
             directorMessage: didSurvive ? "Experimento completado (60s)" : "Sujeto caído en combate",
@@ -1104,10 +1207,12 @@ final class PanicGameScene: SKScene {
             playedAt: Date()
         )
 
+        let updateCallback = onSnapshotUpdate
+        let completedCallback = onRunCompleted
         MainActor.assumeIsolated {
             HapticManager.shared.triggerRunEnd(survived: didSurvive)
-            onSnapshotUpdate?(finalSnap)
-            onRunCompleted?(record)
+            updateCallback?(finalSnap)
+            completedCallback?(record)
         }
     }
 }

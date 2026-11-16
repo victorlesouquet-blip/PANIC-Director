@@ -262,52 +262,52 @@ struct GamePlayView: View {
     @State private var showTouchHint = true
 
     var body: some View {
-        GeometryReader { proxy in
-            ZStack {
+        ZStack {
+            GeometryReader { fullProxy in
                 SpriteKitHostView(scene: viewModel.scene)
-                    .ignoresSafeArea()
                     .onAppear {
                         viewModel.updateSafeMargins(
-                            top: proxy.safeAreaInsets.top,
-                            bottom: proxy.safeAreaInsets.bottom
+                            top: fullProxy.safeAreaInsets.top,
+                            bottom: fullProxy.safeAreaInsets.bottom
                         )
                     }
-                    .task {
-                        try? await Task.sleep(for: .seconds(4))
-                        withAnimation(.easeOut(duration: 0.6)) {
-                            showTouchHint = false
-                        }
-                    }
-                    .onChange(of: proxy.safeAreaInsets) { _, newInsets in
+                    .onChange(of: fullProxy.safeAreaInsets) { _, newInsets in
                         viewModel.updateSafeMargins(top: newInsets.top, bottom: newInsets.bottom)
                     }
+            }
+            .ignoresSafeArea()
 
-                // Capa HUD superior
-                VStack(spacing: 8) {
-                    topHUDHeader
-                    stressDirectorPanel
-                    Spacer()
+            // Capa HUD superior
+            VStack(spacing: 8) {
+                topHUDHeader
+                stressDirectorPanel
+                Spacer()
 
-                    if showTouchHint {
-                        Text("Arrastra el pulgar donde quieras · Disparo automático")
-                            .font(.caption.weight(.semibold))
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(Color.black.opacity(0.62))
-                            .foregroundStyle(RelicarioPalette.swColdSilver)
-                            .clipShape(Capsule())
-                            .padding(.bottom, 16)
-                            .allowsHitTesting(false)
-                            .transition(.opacity)
-                    }
+                if showTouchHint {
+                    Text("Arrastra el pulgar donde quieras · Disparo automático")
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Color.black.opacity(0.62))
+                        .foregroundStyle(RelicarioPalette.swColdSilver)
+                        .clipShape(Capsule())
+                        .padding(.bottom, 16)
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
                 }
-                .padding(.horizontal, 14)
-                .padding(.top, 6)
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 6)
 
-                // Superposición de Pausa
-                if viewModel.isPaused {
-                    pauseOverlay
-                }
+            // Superposición de Pausa
+            if viewModel.isPaused {
+                pauseOverlay
+            }
+        }
+        .task {
+            try? await Task.sleep(for: .seconds(4))
+            withAnimation(.easeOut(duration: 0.6)) {
+                showTouchHint = false
             }
         }
     }
@@ -320,8 +320,19 @@ struct GamePlayView: View {
                     Text(viewModel.initials)
                         .font(.caption.monospaced().weight(.black))
                         .foregroundStyle(RelicarioPalette.swIvory)
+                        .lineLimit(1)
+                    Text("NV.\(viewModel.snapshot.playerLevel)")
+                        .font(.caption2.monospaced().weight(.black))
+                        .lineLimit(1)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(RelicarioPalette.swGold.opacity(0.22))
+                        .foregroundStyle(RelicarioPalette.swGold)
+                        .clipShape(Capsule())
                     Text(viewModel.mode.shortBadge)
                         .font(.caption2.monospaced().weight(.bold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
                         .background(viewModel.mode.accentColor.opacity(0.22))

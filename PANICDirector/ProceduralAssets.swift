@@ -851,3 +851,128 @@ enum ParticleFactory {
         return emitter
     }
 }
+
+// MARK: - Barra Flotante de XP y Nivel encima del Puntero
+
+final class PlayerXPBarNode: SKNode {
+    private let trackNode: SKShapeNode
+    private let fillSprite: SKSpriteNode
+    private let levelLabel: SKLabelNode
+    private let barInnerWidth: CGFloat = 42.0
+
+    override init() {
+        let trackRect = CGRect(x: -23, y: -3, width: 46, height: 6)
+        let trackPath = CGPath(roundedRect: trackRect, cornerWidth: 3, cornerHeight: 3, transform: nil)
+        trackNode = SKShapeNode(path: trackPath)
+        trackNode.fillColor = RelicarioPalette.voidBlack.withAlphaComponent(0.86)
+        trackNode.strokeColor = RelicarioPalette.oldBone.withAlphaComponent(0.70)
+        trackNode.lineWidth = 0.9
+        trackNode.zPosition = 0
+
+        fillSprite = SKSpriteNode(
+            color: RelicarioPalette.coldSilver,
+            size: CGSize(width: barInnerWidth, height: 3.4)
+        )
+        fillSprite.anchorPoint = CGPoint(x: 0.0, y: 0.5)
+        fillSprite.position = CGPoint(x: -barInnerWidth * 0.5, y: 0)
+        fillSprite.xScale = 0.0
+        fillSprite.zPosition = 0.2
+
+        levelLabel = SKLabelNode(fontNamed: "Menlo-Bold")
+        levelLabel.text = "NV.1"
+        levelLabel.fontSize = 9.5
+        levelLabel.fontColor = RelicarioPalette.liturgicalGold
+        levelLabel.horizontalAlignmentMode = .center
+        levelLabel.verticalAlignmentMode = .bottom
+        levelLabel.position = CGPoint(x: 0, y: 5.5)
+        levelLabel.zPosition = 0.3
+
+        super.init()
+
+        addChild(trackNode)
+        addChild(fillSprite)
+        addChild(levelLabel)
+    }
+
+    @available(*, unavailable)
+    required init?(coder aDecoder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func updateXP(progress: Double, level: Int, leveledUp: Bool = false) {
+        let clamped = CGFloat(min(1.0, max(0.0, progress)))
+        let targetColor = level >= 3 ? RelicarioPalette.liturgicalGold : RelicarioPalette.coldSilver
+        levelLabel.text = "NV.\(level)"
+
+        fillSprite.removeAction(forKey: "xpFill")
+        if leveledUp {
+            fillSprite.run(SKAction.sequence([
+                SKAction.scaleX(to: 1.0, duration: 0.05),
+                SKAction.wait(forDuration: 0.08),
+                SKAction.scaleX(to: 0.0, duration: 0.0),
+                SKAction.scaleX(to: clamped, duration: 0.14)
+            ]), withKey: "xpFill")
+        } else {
+            fillSprite.color = targetColor
+            fillSprite.run(SKAction.scaleX(to: clamped, duration: 0.12), withKey: "xpFill")
+        }
+    }
+
+    func playLevelUpEffect(level: Int, in worldLayer: SKNode, playerPos: CGPoint, textures: ProceduralTextureCache) {
+        // Pulso en el texto y barra
+        trackNode.removeAction(forKey: "barPulse")
+        trackNode.run(SKAction.sequence([
+            SKAction.scale(to: 1.16, duration: 0.08),
+            SKAction.scale(to: 1.0, duration: 0.18)
+        ]), withKey: "barPulse")
+
+        levelLabel.removeAction(forKey: "lvlBounce")
+        levelLabel.run(SKAction.sequence([
+            SKAction.scale(to: 1.45, duration: 0.09),
+            SKAction.scale(to: 1.0, duration: 0.18)
+        ]), withKey: "lvlBounce")
+
+        fillSprite.removeAction(forKey: "xpColorFlash")
+        fillSprite.run(SKAction.sequence([
+            SKAction.colorize(with: .white, colorBlendFactor: 1.0, duration: 0.06),
+            SKAction.colorize(with: level >= 3 ? RelicarioPalette.liturgicalGold : RelicarioPalette.coldSilver, colorBlendFactor: 1.0, duration: 0.20)
+        ]), withKey: "xpColorFlash")
+
+        // Onda expansiva dorada alrededor del puntero
+        let ring = SKShapeNode(circleOfRadius: 16)
+        ring.position = playerPos
+        ring.fillColor = .clear
+        ring.strokeColor = RelicarioPalette.liturgicalGold
+        ring.lineWidth = 2.4
+        ring.blendMode = .add
+        ring.zPosition = 5.5
+        worldLayer.addChild(ring)
+        ring.run(SKAction.sequence([
+            SKAction.group([
+                SKAction.scale(to: 2.9, duration: 0.40),
+                SKAction.fadeOut(withDuration: 0.40)
+            ]),
+            SKAction.removeFromParent()
+        ]))
+
+        // Aviso flotante de subida de nivel
+        let popup = SKLabelNode(fontNamed: "Menlo-Bold")
+        popup.text = "¡NIVEL \(level)! +PODER"
+        popup.fontSize = 11.5
+        popup.fontColor = RelicarioPalette.liturgicalGold
+        popup.position = CGPoint(x: playerPos.x, y: playerPos.y + 42)
+        popup.zPosition = 9
+        worldLayer.addChild(popup)
+        popup.run(SKAction.sequence([
+            SKAction.group([
+                SKAction.moveBy(x: 0, y: 20, duration: 0.85),
+                SKAction.sequence([
+                    SKAction.wait(forDuration: 0.45),
+                    SKAction.fadeOut(withDuration: 0.40)
+                ])
+            ]),
+            SKAction.removeFromParent()
+        ]))
+
+        worldLayer.addChild(ParticleFactory.makeDeathBurst(at: playerPos, color: RelicarioPalette.liturgicalGold, count: 14, textures: textures))
+    }
+}
+
