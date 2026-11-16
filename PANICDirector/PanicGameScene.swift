@@ -836,6 +836,15 @@ final class PanicGameScene: SKScene {
         playerXPBar.updateXP(progress: progress, level: playerLevel, leveledUp: didLevelUp)
 
         if didLevelUp {
+            if playerHP < playerMaxHP {
+                let prevHP = playerHP
+                playerHP = min(playerMaxHP, playerHP + 10)
+                let healed = playerHP - prevHP
+                if healed > 0 {
+                    worldLayer.addChild(ParticleFactory.makeShockRing(at: playerPos, color: RelicarioPalette.graceJade, radius: 34))
+                    worldLayer.addChild(ParticleFactory.makeHealPopup(text: "+\(healed) HP", at: CGPoint(x: playerPos.x, y: playerPos.y - 26)))
+                }
+            }
             playerXPBar.playLevelUpEffect(level: playerLevel, in: worldLayer, playerPos: playerPos, textures: textures)
             MainActor.assumeIsolated {
                 HapticManager.shared.triggerLevelUp()
@@ -1185,21 +1194,30 @@ final class PanicGameScene: SKScene {
     // MARK: - Botiquines (Gotas de Gracia) y Generación de Oleadas
 
     private func spawnMedkit(biasAhead: Bool, bounds: CGRect) {
+        guard medkits.count < 4 else { return }
+
+        let safeMinX = bounds.minX + 22
+        let safeMaxX = max(safeMinX, bounds.maxX - 22)
+        let safeMinY = bounds.minY + 22
+        let safeMaxY = max(safeMinY, bounds.maxY - 22)
+
         let pos: CGPoint
         if biasAhead && hypot(playerVelocity.dx, playerVelocity.dy) > 10 {
-            let moveAngle = atan2(playerVelocity.dy, playerVelocity.dx) + CGFloat.random(in: -0.45...0.45)
-            let dist = CGFloat.random(in: 88...135)
+            let moveAngle = atan2(playerVelocity.dy, playerVelocity.dx) + CGFloat.random(in: -0.42...0.42)
+            let dist = CGFloat.random(in: 72...118)
             pos = CGPoint(
-                x: min(max(playerPos.x + cos(moveAngle) * dist, bounds.minX + 18), bounds.maxX - 18),
-                y: min(max(playerPos.y + sin(moveAngle) * dist, bounds.minY + 18), bounds.maxY - 18)
+                x: min(max(playerPos.x + cos(moveAngle) * dist, safeMinX), safeMaxX),
+                y: min(max(playerPos.y + sin(moveAngle) * dist, safeMinY), safeMaxY)
             )
         } else {
             var candidate = CGPoint(
-                x: CGFloat.random(in: (bounds.minX + 24)...(bounds.maxX - 24)),
-                y: CGFloat.random(in: (bounds.minY + 24)...(bounds.maxY - 24))
+                x: CGFloat.random(in: safeMinX...safeMaxX),
+                y: CGFloat.random(in: safeMinY...safeMaxY)
             )
-            if hypot(candidate.x - playerPos.x, candidate.y - playerPos.y) < 75 {
-                candidate.y = candidate.y > bounds.midY ? bounds.minY + 42 : bounds.maxY - 42
+            if hypot(candidate.x - playerPos.x, candidate.y - playerPos.y) < 68 {
+                candidate.y = candidate.y > bounds.midY
+                    ? min(safeMaxY, bounds.minY + 46)
+                    : max(safeMinY, bounds.maxY - 46)
             }
             pos = candidate
         }
@@ -1215,17 +1233,38 @@ final class PanicGameScene: SKScene {
         var remaining: [MedkitEntity] = []
         for kit in medkits {
             kit.age += dt
-            let d = hypot(kit.node.position.x - playerPos.x, kit.node.position.y - playerPos.y)
-            if d <= 26.0 {
-                playerHP = min(playerMaxHP, playerHP + 22)
+            var dx = playerPos.x - kit.node.position.x
+            var dy = playerPos.y - kit.node.position.y
+            var d = hypot(dx, dy)
+
+            // Imán suave al acercarse al botiquín en pleno combate
+            if d > 0.01 && d <= 96.0 {
+                let pullSpeed: CGFloat = 155.0 + (1.0 - d / 96.0) * 140.0
+                let step = min(d, pullSpeed * CGFloat(dt))
+                kit.node.position.x += (dx / d) * step
+                kit.node.position.y += (dy / d) * step
+                dx = playerPos.x - kit.node.position.x
+                dy = playerPos.y - kit.node.position.y
+                d = hypot(dx, dy)
+            }
+
+            if d <= 30.0 {
+                let prevHP = playerHP
+                playerHP = min(playerMaxHP, playerHP + 28)
+                let actualHeal = playerHP - prevHP
                 medkitsCollected += 1
+
                 worldLayer.addChild(ParticleFactory.makeDeathBurst(at: kit.node.position, color: RelicarioPalette.graceJade, count: 14, textures: textures))
+                worldLayer.addChild(ParticleFactory.makeShockRing(at: playerPos, color: RelicarioPalette.graceJade, radius: 42))
+                let popupText = actualHeal > 0 ? "+\(actualHeal) HP" : "VIDA MÁX"
+                worldLayer.addChild(ParticleFactory.makeHealPopup(text: popupText, at: CGPoint(x: playerPos.x, y: playerPos.y + 34)))
+
                 kit.node.removeFromParent()
                 MainActor.assumeIsolated {
                     HapticManager.shared.triggerHeal()
                 }
                 publishHUDNow(directive: nil)
-            } else if kit.age > 12.0 {
+            } else if kit.age > 16.0 {
                 kit.node.run(SKAction.sequence([SKAction.fadeOut(withDuration: 0.25), SKAction.removeFromParent()]))
             } else {
                 remaining.append(kit)

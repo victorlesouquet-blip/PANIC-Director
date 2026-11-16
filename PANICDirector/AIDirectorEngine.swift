@@ -145,21 +145,32 @@ protocol WaveDirectorProtocol: AnyObject {
 // MARK: - Motor 1985: Reglas Fijas Rígidas (Ciego al jugador, escalado continuo)
 
 final class Classic1985Engine: WaveDirectorProtocol {
-    private var didDropScheduledMedkit = false
+    private var nextScheduledMedkitTime: TimeInterval = 9.0
+    private var medkitMsgTimer: TimeInterval = 0.0
+    private var lastMedkitSecond: Int = 9
 
     func reset() {
-        didDropScheduledMedkit = false
+        nextScheduledMedkitTime = 9.0
+        medkitMsgTimer = 0.0
+        lastMedkitSecond = 9
     }
 
     func evaluate(input: WaveDirectorInput) -> WaveDirective {
+        let dt = min(max(input.dt, 0.0), 0.1)
         let t = input.elapsedTime
         let progress = min(1.0, max(0.0, t / 60.0))
+        medkitMsgTimer = max(0.0, medkitMsgTimer - dt)
 
-        // Cura fija únicamente a los 30s sin importar la vida ni el estrés del jugador
+        // Curas fijas cada 9s (9s, 18s, 27s, 36s, 45s, 54s) sin leer vida ni estrés
         var shouldDropFixedMedkit = false
-        if t >= 30.0 && !didDropScheduledMedkit {
-            didDropScheduledMedkit = true
-            shouldDropFixedMedkit = true
+        if t >= nextScheduledMedkitTime && nextScheduledMedkitTime <= 55.0 {
+            let scheduledSec = Int(nextScheduledMedkitTime.rounded())
+            nextScheduledMedkitTime += 9.0
+            if input.activeMedkitCount < 3 {
+                shouldDropFixedMedkit = true
+                lastMedkitSecond = scheduledSec
+                medkitMsgTimer = 1.35
+            }
         }
 
         // Progresión matemática estrictamente creciente con el tiempo (0.60s -> 0.133s, 24 -> 74 enemigos, 1.08x -> 1.68x)
@@ -172,8 +183,8 @@ final class Classic1985Engine: WaveDirectorProtocol {
         let stalkerW = 0.06 + 0.25 * progress
 
         let msg: String
-        if shouldDropFixedMedkit {
-            msg = "Regla fija [30s] → Botiquín programado"
+        if medkitMsgTimer > 0 {
+            msg = "Regla fija [\(lastMedkitSecond)s] → Botiquín programado"
         } else if t < 15.0 {
             msg = "Regla fija [0-15s] → Escalamiento continuo"
         } else if t < 30.0 {
@@ -205,11 +216,10 @@ final class Classic1985Engine: WaveDirectorProtocol {
 // MARK: - Motor 2026: IA Directora Adaptativa (Presión Monotónica + Táctica de Estrés)
 
 final class Adaptive2026Director: WaveDirectorProtocol {
-    private var medkitCooldown: TimeInterval = 5.5
+    private var timeSinceLastMedkit: TimeInterval = 2.0
     private var messageHoldTimer: TimeInterval = 0.0
     private var currentMessage: String = "IA activa → Calibrando presión"
     private var currentState: DirectorRegime = .optimalFlow
-    private var totalMedkitsGranted: Int = 0
 
     // Trinquete monotónico: la dificultad jamás retrocede durante la partida
     private var hardestSpawnInterval: TimeInterval = 0.41
@@ -224,11 +234,10 @@ final class Adaptive2026Director: WaveDirectorProtocol {
     }
 
     func reset() {
-        medkitCooldown = 5.5
+        timeSinceLastMedkit = 2.0
         messageHoldTimer = 0.0
         currentMessage = "IA activa → Calibrando presión"
         currentState = .optimalFlow
-        totalMedkitsGranted = 0
         hardestSpawnInterval = 0.41
         highestMaxEnemies = 38
         highestSpeedMultiplier = 1.12
@@ -236,7 +245,7 @@ final class Adaptive2026Director: WaveDirectorProtocol {
 
     func evaluate(input: WaveDirectorInput) -> WaveDirective {
         let dt = min(max(input.dt, 0.0), 0.1)
-        medkitCooldown = max(0.0, medkitCooldown - dt)
+        timeSinceLastMedkit += dt
         messageHoldTimer = max(0.0, messageHoldTimer - dt)
 
         let stress = input.stressIndex
@@ -264,14 +273,19 @@ final class Adaptive2026Director: WaveDirectorProtocol {
         let regimeChanged = targetRegime != currentState
         currentState = targetRegime
 
-        // Decisión táctica de Gota de Gracia (máx 2 botiquines por ronda)
+        // Decisión táctica frecuente de Gotas de Gracia (sin frenar la presión enemiga)
         var dropMedkit = false
-        let needsEmergencyHeal = (hp <= 0.30 && stress >= 75.0) || (hp <= 0.20)
-        let needsLateRelief = (t >= 40.0 && totalMedkitsGranted == 0 && hp <= 0.55)
-        if totalMedkitsGranted < 2 && (needsEmergencyHeal || needsLateRelief) && input.activeMedkitCount == 0 && medkitCooldown <= 0 {
+        let needsCriticalSave = (hp <= 0.44)
+        let needsTacticalHeal = (hp <= 0.74 && stress >= 45.0) || (hp <= 0.60)
+        let needsFlowSustain = (t >= 9.0 && hp <= 0.88)
+
+        let emergencyReady = needsCriticalSave && timeSinceLastMedkit >= 3.4
+        let tacticalReady = needsTacticalHeal && timeSinceLastMedkit >= 4.8
+        let sustainReady = needsFlowSustain && timeSinceLastMedkit >= 6.4
+
+        if input.activeMedkitCount < 3 && (emergencyReady || tacticalReady || sustainReady) {
             dropMedkit = true
-            medkitCooldown = 13.0
-            totalMedkitsGranted += 1
+            timeSinceLastMedkit = 0.0
         }
 
         // Suelo progresivo con el tiempo (parte en el nivel actual y sube sin parar hasta 60s)
@@ -304,12 +318,12 @@ final class Adaptive2026Director: WaveDirectorProtocol {
             suppressLunges = true
             interventionActive = true
             let msg = dropMedkit
-                ? "Jugador al límite → Cura sin tregua"
+                ? "Jugador al límite → Cura de emergencia"
                 : "Presión crítica → Corredor de escape"
             updateMessage(msg, force: dropMedkit || regimeChanged)
 
         case .highStressRelief:
-            // Mantiene el ritmo ascendente abriendo ángulo de evasión sin ralentizar criaturas
+            // Mantiene el ritmo ascendente abriendo ángulo de evasión y entregando botiquín en ruta
             candidateInterval = timeBaseInterval
             candidateMaxEnemies = timeBaseMaxEnemies
             candidateSpeed = timeBaseSpeed
@@ -320,10 +334,15 @@ final class Adaptive2026Director: WaveDirectorProtocol {
             safeHalfCone = .pi * 0.20
             suppressLunges = true
             interventionActive = true
-            let msg = escapeAngle != nil
-                ? "Estrés alto → Brecha táctica activa"
-                : "Estrés alto → Presión sostenida"
-            updateMessage(msg, force: regimeChanged)
+            let msg: String
+            if dropMedkit {
+                msg = "Estrés alto → Botiquín en ruta"
+            } else if escapeAngle != nil {
+                msg = "Estrés alto → Brecha táctica activa"
+            } else {
+                msg = "Estrés alto → Presión sostenida"
+            }
+            updateMessage(msg, force: dropMedkit || regimeChanged)
 
         case .lowStressPush:
             // El estrés bajo inyecta aceleración permanente nunca inferior a 0.26s / 46 / 1.28x
@@ -358,10 +377,10 @@ final class Adaptive2026Director: WaveDirectorProtocol {
             safeAngle = nil
             safeHalfCone = 0
             suppressLunges = false
-            interventionActive = isClimax
+            interventionActive = isClimax || dropMedkit
             let msg: String
             if dropMedkit {
-                msg = "Desgaste detectado → Gota de Gracia"
+                msg = "Ritmo intenso → Gota de Gracia"
             } else if isClimax {
                 msg = "Clímax final → Presión máxima"
             } else {
@@ -408,6 +427,7 @@ final class HybridMixDirector: WaveDirectorProtocol {
     private var messageHoldTimer: TimeInterval = 0.0
     private var currentMessage: String = "Mix 85×26 → Reloj fijo + IA"
     private var wasInClockSurge = false
+    private var hybridMedkitGapTimer: TimeInterval = 2.0
 
     // Trinquete monotónico: cada ráfaga cronometrada consolida el nuevo piso de dificultad
     private var hardestSpawnInterval: TimeInterval = 0.41
@@ -420,6 +440,7 @@ final class HybridMixDirector: WaveDirectorProtocol {
         messageHoldTimer = 0.0
         currentMessage = "Mix 85×26 → Reloj fijo + IA"
         wasInClockSurge = false
+        hybridMedkitGapTimer = 2.0
         hardestSpawnInterval = 0.41
         highestMaxEnemies = 38
         highestSpeedMultiplier = 1.15
@@ -428,6 +449,7 @@ final class HybridMixDirector: WaveDirectorProtocol {
     func evaluate(input: WaveDirectorInput) -> WaveDirective {
         let dt = min(max(input.dt, 0.0), 0.1)
         messageHoldTimer = max(0.0, messageHoldTimer - dt)
+        hybridMedkitGapTimer += dt
 
         let baseFixed = fixed1985.evaluate(input: input)
         let adaptive = adaptive2026.evaluate(input: input)
@@ -439,7 +461,9 @@ final class HybridMixDirector: WaveDirectorProtocol {
         let inClockSurge = (t >= 14.5 && t <= 17.7)
             || (t >= 29.5 && t <= 32.7)
             || (t >= 44.5 && t <= 47.7)
-        let surgeChanged = inClockSurge != wasInClockSurge
+        let prevInSurge = wasInClockSurge
+        let surgeChanged = inClockSurge != prevInSurge
+        let surgeJustEnded = prevInSurge && !inClockSurge
         wasInClockSurge = inClockSurge
 
         let timeFloorInterval = 0.41 / (1.0 + 2.42 * progress)
@@ -478,8 +502,15 @@ final class HybridMixDirector: WaveDirectorProtocol {
         let partialHalfCone: CGFloat = partialEscapeAngle != nil ? (.pi * 0.17) : 0.0
         let suppressLunges = !inClockSurge && adaptive.suppressSimultaneousLunges
 
-        let dropMedkit = adaptive.spawnEmergencyMedkit
-            || (baseFixed.spawnEmergencyMedkit && input.playerHPNormalized < 0.75 && input.activeMedkitCount == 0)
+        // Combina botiquines del reloj 1985, curas reactivas 2026 y recompensa post-ráfaga sin apilar dos juntos
+        let fixedTrigger = baseFixed.spawnEmergencyMedkit && input.playerHPNormalized <= 0.94
+        let postSurgeTrigger = surgeJustEnded && input.playerHPNormalized <= 0.88
+        let wantsMedkit = adaptive.spawnEmergencyMedkit || fixedTrigger || postSurgeTrigger
+        let minGap: TimeInterval = input.playerHPNormalized <= 0.42 ? 1.5 : 2.3
+        let dropMedkit = wantsMedkit && input.activeMedkitCount < 3 && hybridMedkitGapTimer >= minGap
+        if dropMedkit {
+            hybridMedkitGapTimer = 0.0
+        }
 
         let nextMsg: String
         var forceMsg = surgeChanged || dropMedkit
@@ -516,9 +547,9 @@ final class HybridMixDirector: WaveDirectorProtocol {
             safeEscapeHalfConeRadians: partialHalfCone,
             suppressSimultaneousLunges: suppressLunges,
             spawnEmergencyMedkit: dropMedkit,
-            medkitBiasAhead: adaptive.medkitBiasAhead,
+            medkitBiasAhead: adaptive.spawnEmergencyMedkit || input.playerHPNormalized < 0.78,
             microMessage: currentMessage,
-            isInterventionActive: inClockSurge || adaptive.isInterventionActive
+            isInterventionActive: inClockSurge || dropMedkit || adaptive.isInterventionActive
         )
     }
 }

@@ -872,6 +872,28 @@ enum ParticleFactory {
         ]))
         return emitter
     }
+
+    static func makeHealPopup(text: String, at position: CGPoint) -> SKNode {
+        let label = SKLabelNode(fontNamed: "Menlo-Bold")
+        label.text = text
+        label.fontSize = 11.5
+        label.fontColor = RelicarioPalette.graceJade
+        label.horizontalAlignmentMode = .center
+        label.verticalAlignmentMode = .center
+        label.position = position
+        label.zPosition = 9.0
+        label.run(SKAction.sequence([
+            SKAction.group([
+                SKAction.moveBy(x: 0, y: 18, duration: 0.65),
+                SKAction.sequence([
+                    SKAction.wait(forDuration: 0.32),
+                    SKAction.fadeOut(withDuration: 0.33)
+                ])
+            ]),
+            SKAction.removeFromParent()
+        ]))
+        return label
+    }
 }
 
 // MARK: - Barra Flotante de XP y Nivel encima del Puntero
