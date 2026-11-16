@@ -135,8 +135,12 @@ final class PanicGameScene: SKScene {
 
     // Motores de IA y estrés
     private let stressTracker = StressMetricsTracker()
-    private lazy var waveDirector: WaveDirectorProtocol = {
-        mode == .classic1985 ? Classic1985Engine() : Adaptive2026Director()
+    private lazy var waveDirector: any WaveDirectorProtocol = {
+        if mode == .classic1985 {
+            return Classic1985Engine()
+        } else {
+            return Adaptive2026Director()
+        }
     }()
     private var previousStressTier: StressTier = .bajo
 
