@@ -1,0 +1,7 @@
+# Xcode user-specific & build artifacts
+**/xcuserdata/
+DerivedData/
+.DS_Store
+*.ipa
+*.dSYM.zip
+*.dSYM
