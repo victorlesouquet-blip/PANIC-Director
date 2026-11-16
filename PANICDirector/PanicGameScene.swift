@@ -33,9 +33,6 @@ final class GameSessionViewModel {
         self.initials = initials
         self.mode = mode
         self.onFinish = onFinish
-        self.snapshot.directorMessage = mode == .classic1985
-            ? "Regla fija [0-15s] → Oleada inicial"
-            : "IA activa → Leyendo estrés"
 
         let createdScene = PanicGameScene(
             mode: mode,
@@ -45,6 +42,10 @@ final class GameSessionViewModel {
         )
         createdScene.scaleMode = .resizeFill
         self.scene = createdScene
+
+        self.snapshot.directorMessage = mode == .classic1985
+            ? "Regla fija [0-15s] → Oleada inicial"
+            : "IA activa → Leyendo estrés"
 
         createdScene.onSnapshotUpdate = { [weak self] snap in
             self?.snapshot = snap
