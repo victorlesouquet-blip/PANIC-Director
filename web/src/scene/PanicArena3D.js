@@ -1,4 +1,5 @@
 // Arena 3D completa en Three.js replicando exactamente PanicGameScene.swift (simulación 2D lógica -> mundo 3D Y-up)
+// Optimizada con InstancedMesh, pools sin GC, DPR adaptativo y compilación anticipada de shaders.
 
 import * as THREE from 'three';
 import {
@@ -10,12 +11,9 @@ import {
 import { createWaveDirector, StressMetricsTracker } from '../engine/aiDirector.js';
 import {
   buildPlayerAvatar3D,
-  createDesollado3D,
-  createFloatingTextSprite3D,
-  createJaula3D,
-  createMartir3D,
-  createMedkit3D,
+  InstancedArenaPools,
   PlayerXPBar3D,
+  POOL_CAPS,
   SharedThreeAssets
 } from './meshes3d.js';
 
@@ -34,6 +32,8 @@ const ARENA_BOUNDS = {
   width: 380,
   height: 600
 };
+
+const POPUP_POOL_SIZE = 8;
 
 function xpRequiredForLevel(level) {
   const step = Math.max(0, level - 1);
@@ -71,6 +71,8 @@ export class PanicArena3D {
     this.hasEnded = false;
     this.isUserPaused = false;
     this.isDisposed = false;
+    this.contextLost = false;
+    this.needsPausedRender = false;
     this.rafId = null;
     this.lastFrameTime = null;
 
@@ -90,12 +92,18 @@ export class PanicArena3D {
     this.previousStressTier = this.stressTracker.currentTier;
     this.lastDirective = null;
 
-    // Entidades activas
+    // Entidades y VFX en pools ligeros (sin allocations Three.js por frame)
     this.enemies = [];
     this.projectiles = [];
     this.enemyProjectiles = [];
     this.medkits = [];
-    this.effects = [];
+    this.particles = [];
+    this.shockRings = [];
+    this.detachedRibs = [];
+    this.ghostTrails = [];
+    this.staticGlows = [];
+    this.activePopups = [];
+    this.popupPool = [];
 
     // Contadores y temporizadores
     this.elapsedTime = 0;
@@ -107,6 +115,22 @@ export class PanicArena3D {
     this.shakeTimer = 0;
     this.shakeAmplitude = 0;
 
+    // Métricas de DPR adaptativo
+    this.dprSteps = [0.75, 0.9, 1.0, 1.25, 1.5];
+    this.nativeDpr = window.devicePixelRatio || 1;
+    this.maxPixelRatio = Math.min(this.nativeDpr, 1.5);
+    this.currentPixelRatio = this.maxPixelRatio;
+    this.perfFrames = 0;
+    this.perfDeltaSum = 0;
+
+    // Scratch sin allocaciones
+    this._desiredTarget = new THREE.Vector3();
+    this._desiredCamPos = new THREE.Vector3();
+    this._colIvory = new THREE.Color(RELICARIO_PALETTE.ivory);
+    this._colColdSilver = new THREE.Color(RELICARIO_PALETTE.coldSilver);
+    this._colGold = new THREE.Color(RELICARIO_PALETTE.liturgicalGold);
+    this._colScratch = new THREE.Color();
+
     // Entrada híbrida: teclado WASD/Flechas + joystick flotante táctil/ratón
     this.keysDown = new Set();
     this.activePointerId = null;
@@ -114,7 +138,7 @@ export class PanicArena3D {
     this.pointerMoveInput = { dx: 0, dy: 0 };
     this.moveInput = { dx: 0, dy: 0 };
 
-    // Inicializar Three.js + Escenario + Entidad jugador
+    // Inicializar Three.js + Escenario + Pools + Entidad jugador
     this.assets = new SharedThreeAssets();
     this.#initThreeScene();
     this.#bindInputs();
@@ -122,22 +146,31 @@ export class PanicArena3D {
     this.#startLoop();
   }
 
+  #computeCameraFov(aspect) {
+    if (aspect < 0.85) {
+      return Math.min(62, 48 + (0.85 - aspect) * 36);
+    }
+    return 48;
+  }
+
   #initThreeScene() {
     const width = Math.max(320, this.container.clientWidth || window.innerWidth);
     const height = Math.max(320, this.container.clientHeight || window.innerHeight);
+    const aspect = width / height;
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(RELICARIO_PALETTE.arenaBG);
-    this.scene.fog = new THREE.FogExp2('#110E0E', 0.00115);
+    this.scene.background = new THREE.Color('#0B0809');
+    this.scene.fog = new THREE.Fog('#0B0809', 260, 1100);
 
-    this.camera = new THREE.PerspectiveCamera(48, width / height, 20, 1800);
+    this.camera = new THREE.PerspectiveCamera(this.#computeCameraFov(aspect), aspect, 20, 1800);
     this.cameraLookTarget = new THREE.Vector3(0, 12, 0);
 
     this.renderer = new THREE.WebGLRenderer({
-      antialias: true,
-      powerPreference: 'high-performance'
+      antialias: this.nativeDpr < 1.5,
+      powerPreference: 'high-performance',
+      stencil: false
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    this.renderer.setPixelRatio(this.currentPixelRatio);
     this.renderer.setSize(width, height);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.domElement.className = 'arena-canvas';
@@ -150,26 +183,29 @@ export class PanicArena3D {
     this.#buildSanctuaryArena();
     this.#buildAmbientEmbers();
     this.#buildPlayer();
+    this.pools = new InstancedArenaPools(this.worldGroup, this.assets);
+    this.#buildPopupPool();
+
     this.#updateCamera(1.0);
+    // Compilar todos los shaders (incluyendo InstancedMesh) antes del primer frame
+    this.renderer.compile(this.scene, this.camera);
+    this.pools.resetFrameCounts();
+    this.#syncPools();
   }
 
   #buildLights() {
-    const hemi = new THREE.HemisphereLight('#5C494F', '#0C0909', 1.25);
+    const hemi = new THREE.HemisphereLight('#685258', '#0C0909', 1.35);
     this.scene.add(hemi);
 
-    const keyLight = new THREE.DirectionalLight('#F5EFE6', 1.45);
+    const keyLight = new THREE.DirectionalLight('#F5EFE6', 1.48);
     keyLight.position.set(160, 360, 210);
     this.scene.add(keyLight);
 
-    const rimLight = new THREE.DirectionalLight(RELICARIO_PALETTE.coldSilver, 0.58);
+    const rimLight = new THREE.DirectionalLight(RELICARIO_PALETTE.coldSilver, 0.62);
     rimLight.position.set(-180, 190, -250);
     this.scene.add(rimLight);
 
-    const altarAccent = new THREE.PointLight(RELICARIO_PALETTE.visceralCore, 1.4, 520, 1.5);
-    altarAccent.position.set(0, 95, 0);
-    this.scene.add(altarAccent);
-
-    this.playerLight = new THREE.PointLight(this.avatarDef.auraColor, 2.2, 230, 1.4);
+    this.playerLight = new THREE.PointLight(this.avatarDef.auraColor, 2.2, 235, 1.35);
     this.playerLight.position.set(0, 46, 0);
     this.scene.add(this.playerLight);
   }
@@ -177,34 +213,33 @@ export class PanicArena3D {
   #buildSanctuaryArena() {
     // Textura procedural de losas basálticas oscuras + juntas de piedra
     const texCanvas = document.createElement('canvas');
-    texCanvas.width = 512;
-    texCanvas.height = 512;
+    texCanvas.width = 256;
+    texCanvas.height = 256;
     const ctx = texCanvas.getContext('2d');
     ctx.fillStyle = '#151011';
-    ctx.fillRect(0, 0, 512, 512);
+    ctx.fillRect(0, 0, 256, 256);
 
-    // Variación orgánica en las baldosas de basalto
-    const tile = 64;
-    for (let y = 0; y < 512; y += tile) {
-      for (let x = 0; x < 512; x += tile) {
+    const tile = 32;
+    for (let y = 0; y < 256; y += tile) {
+      for (let x = 0; x < 256; x += tile) {
         const shade = ((x * 7 + y * 13) % 11) - 5;
         const r = 24 + shade;
         const g = 18 + Math.round(shade * 0.7);
         const b = 19 + Math.round(shade * 0.7);
         ctx.fillStyle = `rgb(${r},${g},${b})`;
-        ctx.fillRect(x + 2, y + 2, tile - 4, tile - 4);
+        ctx.fillRect(x + 1, y + 1, tile - 2, tile - 2);
       }
     }
     ctx.strokeStyle = '#0B0809';
-    ctx.lineWidth = 3;
-    for (let i = 0; i <= 512; i += tile) {
+    ctx.lineWidth = 2;
+    for (let i = 0; i <= 256; i += tile) {
       ctx.beginPath();
       ctx.moveTo(i, 0);
-      ctx.lineTo(i, 512);
+      ctx.lineTo(i, 256);
       ctx.stroke();
       ctx.beginPath();
       ctx.moveTo(0, i);
-      ctx.lineTo(512, i);
+      ctx.lineTo(256, i);
       ctx.stroke();
     }
 
@@ -215,44 +250,29 @@ export class PanicArena3D {
     this.floorTex.colorSpace = THREE.SRGBColorSpace;
     this.assets.textures.push(this.floorTex);
 
-    // Suelo principal jugable
+    // Suelo principal jugable (Lambert rápido; Three.js ordena opacos front-to-back para Early-Z)
     const floorGeo = new THREE.PlaneGeometry(ARENA_BOUNDS.width, ARENA_BOUNDS.height);
     floorGeo.rotateX(-Math.PI / 2);
-    this.assets.geometries.push(floorGeo);
+    this.assets.trackGeometry(floorGeo);
 
-    const floorMat = new THREE.MeshStandardMaterial({
-      map: this.floorTex,
-      roughness: 0.85,
-      metalness: 0.12
+    const floorMat = new THREE.MeshLambertMaterial({
+      map: this.floorTex
     });
     this.assets.trackMaterial(floorMat);
     const floor = new THREE.Mesh(floorGeo, floorMat);
     floor.position.y = 0;
     this.worldGroup.add(floor);
 
-    // Explanada exterior abisal para que nunca se vea corte vacío
-    const voidFloorGeo = new THREE.PlaneGeometry(1100, 1300);
-    voidFloorGeo.rotateX(-Math.PI / 2);
-    this.assets.geometries.push(voidFloorGeo);
-    const voidFloorMat = new THREE.MeshStandardMaterial({
-      color: '#090707',
-      roughness: 0.95
-    });
-    this.assets.trackMaterial(voidFloorMat);
-    const voidFloor = new THREE.Mesh(voidFloorGeo, voidFloorMat);
-    voidFloor.position.y = -2;
-    this.worldGroup.add(voidFloor);
-
-    // Sello ritual geométrico central del Relicario (anillos y rombo)
-    const outerSealGeo = new THREE.RingGeometry(118, 122, 64);
+    // Sello ritual geométrico central del Relicario (anillos y rombo sin DoubleSide ni niebla)
+    const outerSealGeo = new THREE.RingGeometry(118, 122, 48);
     outerSealGeo.rotateX(-Math.PI / 2);
-    this.assets.geometries.push(outerSealGeo);
+    this.assets.trackGeometry(outerSealGeo);
     const sealMat = new THREE.MeshBasicMaterial({
       color: '#3D2326',
       transparent: true,
       opacity: 0.85,
-      side: THREE.DoubleSide,
-      depthWrite: false
+      depthWrite: false,
+      fog: false
     });
     this.assets.trackMaterial(sealMat);
     const outerSeal = new THREE.Mesh(outerSealGeo, sealMat);
@@ -261,25 +281,35 @@ export class PanicArena3D {
 
     const innerSealGeo = new THREE.RingGeometry(82, 85, 4);
     innerSealGeo.rotateX(-Math.PI / 2);
-    this.assets.geometries.push(innerSealGeo);
+    this.assets.trackGeometry(innerSealGeo);
     const diamondSeal = new THREE.Mesh(innerSealGeo, sealMat);
     diamondSeal.position.y = 0.45;
     this.worldGroup.add(diamondSeal);
 
-    const accentSealGeo = new THREE.RingGeometry(42, 44, 32);
+    const accentSealGeo = new THREE.RingGeometry(42, 44, 28);
     accentSealGeo.rotateX(-Math.PI / 2);
-    this.assets.geometries.push(accentSealGeo);
+    this.assets.trackGeometry(accentSealGeo);
     const goldSealMat = new THREE.MeshBasicMaterial({
       color: RELICARIO_PALETTE.liturgicalGold,
       transparent: true,
       opacity: 0.28,
-      side: THREE.DoubleSide,
-      depthWrite: false
+      depthWrite: false,
+      fog: false
     });
     this.assets.trackMaterial(goldSealMat);
     const coreSeal = new THREE.Mesh(accentSealGeo, goldSealMat);
     coreSeal.position.y = 0.5;
     this.worldGroup.add(coreSeal);
+
+    // Resplandor carmesí central en el altar (sin PointLight extra por fragmento)
+    this.staticGlows.push({
+      x: 0,
+      y: 0.25,
+      z: 0,
+      size: 240,
+      color: new THREE.Color(RELICARIO_PALETTE.visceralCore),
+      opacity: 0.24
+    });
 
     // Bordillo perimetral de obsidiana y línea sutil de límite arena
     const halfW = ARENA_BOUNDS.width * 0.5;
@@ -290,11 +320,12 @@ export class PanicArena3D {
       new THREE.Vector3(halfW, 1.2, halfH),
       new THREE.Vector3(-halfW, 1.2, halfH)
     ]);
-    this.assets.geometries.push(borderGeo);
+    this.assets.trackGeometry(borderGeo);
     const borderMat = new THREE.LineBasicMaterial({
       color: RELICARIO_PALETTE.vermilion,
       transparent: true,
-      opacity: 0.42
+      opacity: 0.42,
+      fog: false
     });
     this.assets.trackMaterial(borderMat);
     const borderLoop = new THREE.LineLoop(borderGeo, borderMat);
@@ -302,27 +333,31 @@ export class PanicArena3D {
 
     const wallThick = 14;
     const wallH = 12;
-    const wallMat = new THREE.MeshStandardMaterial({
-      color: '#1E1517',
-      roughness: 0.72,
-      metalness: 0.25
+    const wallMat = new THREE.MeshLambertMaterial({
+      color: '#1E1517'
     });
     this.assets.trackMaterial(wallMat);
 
+    // Muros perimetrales instanciados (1 draw call)
     const wallConfigs = [
       { w: ARENA_BOUNDS.width + wallThick * 2, d: wallThick, x: 0, z: -(halfH + wallThick * 0.5) },
       { w: ARENA_BOUNDS.width + wallThick * 2, d: wallThick, x: 0, z: halfH + wallThick * 0.5 },
       { w: wallThick, d: ARENA_BOUNDS.height, x: -(halfW + wallThick * 0.5), z: 0 },
       { w: wallThick, d: ARENA_BOUNDS.height, x: halfW + wallThick * 0.5, z: 0 }
     ];
-    for (const cfg of wallConfigs) {
-      const mesh = new THREE.Mesh(this.assets.boxUnit, wallMat);
-      mesh.scale.set(cfg.w, wallH, cfg.d);
-      mesh.position.set(cfg.x, wallH * 0.5 - 1, cfg.z);
-      this.worldGroup.add(mesh);
-    }
+    const wallsInstanced = new THREE.InstancedMesh(this.assets.boxUnit, wallMat, wallConfigs.length);
+    const dummy = new THREE.Object3D();
+    wallConfigs.forEach((cfg, idx) => {
+      dummy.position.set(cfg.x, wallH * 0.5 - 1, cfg.z);
+      dummy.scale.set(cfg.w, wallH, cfg.d);
+      dummy.rotation.set(0, 0, 0);
+      dummy.updateMatrix();
+      wallsInstanced.setMatrixAt(idx, dummy.matrix);
+    });
+    wallsInstanced.instanceMatrix.needsUpdate = true;
+    this.worldGroup.add(wallsInstanced);
 
-    // Pilares góticos perimetrales con pebeteros encendidos
+    // Pilares góticos perimetrales + capiteles instanciados (2 draw calls en total)
     const pillarPositions = [
       [-halfW - 10, -halfH - 10],
       [halfW + 10, -halfH - 10],
@@ -334,35 +369,38 @@ export class PanicArena3D {
       [0, halfH + 10]
     ];
 
-    for (const [px, pz] of pillarPositions) {
-      const col = new THREE.Mesh(this.assets.cylUnit, wallMat);
-      col.scale.set(11, 56, 11);
-      col.position.set(px, 28, pz);
-      this.worldGroup.add(col);
+    const pillarsInstanced = new THREE.InstancedMesh(this.assets.cylUnit, wallMat, pillarPositions.length);
+    const capsInstanced = new THREE.InstancedMesh(this.assets.octaUnit, this.assets.matGold, pillarPositions.length);
+    const emberColor = new THREE.Color(RELICARIO_PALETTE.emberOrange);
 
-      const cap = new THREE.Mesh(this.assets.octaUnit, this.assets.matGold);
-      cap.scale.set(6, 7, 6);
-      cap.position.set(px, 59, pz);
-      this.worldGroup.add(cap);
+    pillarPositions.forEach(([px, pz], idx) => {
+      dummy.position.set(px, 28, pz);
+      dummy.scale.set(11, 56, 11);
+      dummy.updateMatrix();
+      pillarsInstanced.setMatrixAt(idx, dummy.matrix);
 
-      const emberSpriteMat = new THREE.SpriteMaterial({
-        map: this.assets.radialGlowTex,
-        color: RELICARIO_PALETTE.emberOrange,
-        transparent: true,
-        opacity: 0.52,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false
+      dummy.position.set(px, 59, pz);
+      dummy.scale.set(6, 7, 6);
+      dummy.updateMatrix();
+      capsInstanced.setMatrixAt(idx, dummy.matrix);
+
+      this.staticGlows.push({
+        x: px,
+        y: 60,
+        z: pz,
+        size: 34,
+        color: emberColor,
+        opacity: 0.52
       });
-      this.assets.trackMaterial(emberSpriteMat);
-      const ember = new THREE.Sprite(emberSpriteMat);
-      ember.scale.set(34, 34, 1);
-      ember.position.set(px, 60, pz);
-      this.worldGroup.add(ember);
-    }
+    });
+    pillarsInstanced.instanceMatrix.needsUpdate = true;
+    capsInstanced.instanceMatrix.needsUpdate = true;
+    this.staticInstancedMeshes = [wallsInstanced, pillarsInstanced, capsInstanced];
+    this.worldGroup.add(wallsInstanced, pillarsInstanced, capsInstanced);
   }
 
   #buildAmbientEmbers() {
-    const count = 48;
+    const count = 42;
     const positions = new Float32Array(count * 3);
     for (let i = 0; i < count; i++) {
       positions[i * 3] = randomRange(-ARENA_BOUNDS.width * 0.55, ARENA_BOUNDS.width * 0.55);
@@ -371,7 +409,7 @@ export class PanicArena3D {
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    this.assets.geometries.push(geo);
+    this.assets.trackGeometry(geo);
 
     const mat = new THREE.PointsMaterial({
       color: RELICARIO_PALETTE.emberOrange,
@@ -379,7 +417,8 @@ export class PanicArena3D {
       transparent: true,
       opacity: 0.42,
       blending: THREE.AdditiveBlending,
-      depthWrite: false
+      depthWrite: false,
+      fog: false
     });
     this.assets.trackMaterial(mat);
     this.emberPoints = new THREE.Points(geo, mat);
@@ -391,10 +430,33 @@ export class PanicArena3D {
     this.playerVisual.root.position.set(0, 0, 0);
     this.worldGroup.add(this.playerVisual.root);
 
-    this.playerXPBar = new PlayerXPBar3D();
+    this.playerXPBar = new PlayerXPBar3D(this.assets);
     this.playerXPBar.sprite.position.set(0, 44, -8);
     this.worldGroup.add(this.playerXPBar.sprite);
     this.playerXPBar.updateXP(0, 1, false);
+  }
+
+  #buildPopupPool() {
+    for (let i = 0; i < POPUP_POOL_SIZE; i++) {
+      const mat = new THREE.SpriteMaterial({
+        map: this.assets.white1x1Tex,
+        transparent: true,
+        depthTest: false,
+        depthWrite: false
+      });
+      const sprite = new THREE.Sprite(mat);
+      sprite.scale.set(92, 20, 1);
+      sprite.renderOrder = 25;
+      sprite.visible = false;
+      this.worldGroup.add(sprite);
+      this.popupPool.push({
+        sprite,
+        material: mat,
+        inUse: false,
+        life: 0,
+        maxLife: 0.72
+      });
+    }
   }
 
   // MARK: - Control de Entrada Híbrido (Touch + Ratón + Teclado)
@@ -427,11 +489,31 @@ export class PanicArena3D {
       this.#releaseJoystick();
     };
 
+    this._onVisibilityChange = () => {
+      if (document.hidden) {
+        this.keysDown.clear();
+        this.#releaseJoystick();
+      } else {
+        this.lastFrameTime = null;
+      }
+    };
+
     window.addEventListener('keydown', this._onKeyDown);
     window.addEventListener('keyup', this._onKeyUp);
     window.addEventListener('blur', this._onWindowBlur);
+    document.addEventListener('visibilitychange', this._onVisibilityChange);
 
     const dom = this.renderer.domElement;
+    this._onContextMenu = (e) => e.preventDefault();
+    this._onWebGLContextLost = (e) => {
+      e.preventDefault();
+      this.contextLost = true;
+    };
+    this._onWebGLContextRestored = () => {
+      this.contextLost = false;
+      this.needsPausedRender = true;
+    };
+
     this._onPointerDown = (e) => {
       if (this.hasEnded || this.isUserPaused || this.activePointerId !== null) return;
       if (e.button !== undefined && e.button !== 0 && e.pointerType === 'mouse') return;
@@ -442,8 +524,10 @@ export class PanicArena3D {
       } catch {
         // Ignorar si no soporta capture
       }
-      this.joystickOrigin = { x: e.clientX, y: e.clientY };
-      this.pointerMoveInput = { dx: 0, dy: 0 };
+      this.joystickOrigin.x = e.clientX;
+      this.joystickOrigin.y = e.clientY;
+      this.pointerMoveInput.dx = 0;
+      this.pointerMoveInput.dy = 0;
       this.onJoystickChange?.({
         active: true,
         originX: e.clientX,
@@ -457,11 +541,12 @@ export class PanicArena3D {
       if (this.activePointerId !== e.pointerId) return;
       const dx = e.clientX - this.joystickOrigin.x;
       const dyScreen = e.clientY - this.joystickOrigin.y;
-      const dist = Math.hypot(dx, dyScreen);
+      const distSq = dx * dx + dyScreen * dyScreen;
       const maxR = 46.0;
 
-      if (dist < 4.5) {
-        this.pointerMoveInput = { dx: 0, dy: 0 };
+      if (distSq < 20.25) {
+        this.pointerMoveInput.dx = 0;
+        this.pointerMoveInput.dy = 0;
         this.onJoystickChange?.({
           active: true,
           originX: this.joystickOrigin.x,
@@ -472,16 +557,15 @@ export class PanicArena3D {
         return;
       }
 
+      const dist = Math.sqrt(distSq);
       const clamped = Math.min(dist, maxR);
       const nx = dx / dist;
       const nyScreen = dyScreen / dist;
       const throttle = clamped / maxR;
 
       // En pantalla, arrastrar arriba (dyScreen < 0) equivale a +simY
-      this.pointerMoveInput = {
-        dx: nx * throttle,
-        dy: -nyScreen * throttle
-      };
+      this.pointerMoveInput.dx = nx * throttle;
+      this.pointerMoveInput.dy = -nyScreen * throttle;
 
       this.onJoystickChange?.({
         active: true,
@@ -497,6 +581,9 @@ export class PanicArena3D {
       this.#releaseJoystick();
     };
 
+    dom.addEventListener('contextmenu', this._onContextMenu);
+    dom.addEventListener('webglcontextlost', this._onWebGLContextLost);
+    dom.addEventListener('webglcontextrestored', this._onWebGLContextRestored);
     dom.addEventListener('pointerdown', this._onPointerDown);
     dom.addEventListener('pointermove', this._onPointerMove);
     dom.addEventListener('pointerup', this._onPointerEnd);
@@ -512,13 +599,15 @@ export class PanicArena3D {
       }
     }
     this.activePointerId = null;
-    this.pointerMoveInput = { dx: 0, dy: 0 };
+    this.pointerMoveInput.dx = 0;
+    this.pointerMoveInput.dy = 0;
     this.onJoystickChange?.({ active: false, originX: 0, originY: 0, knobX: 0, knobY: 0 });
   }
 
   #resolveMoveInput() {
     if (this.activePointerId !== null) {
-      this.moveInput = { ...this.pointerMoveInput };
+      this.moveInput.dx = this.pointerMoveInput.dx;
+      this.moveInput.dy = this.pointerMoveInput.dy;
       return this.moveInput;
     }
 
@@ -529,11 +618,13 @@ export class PanicArena3D {
     if (this.keysDown.has('KeyW') || this.keysDown.has('ArrowUp')) ky += 1;
     if (this.keysDown.has('KeyS') || this.keysDown.has('ArrowDown')) ky -= 1;
 
-    const mag = Math.hypot(kx, ky);
-    if (mag > 0) {
-      this.moveInput = { dx: kx / mag, dy: ky / mag };
+    if (kx !== 0 || ky !== 0) {
+      const mag = Math.hypot(kx, ky);
+      this.moveInput.dx = kx / mag;
+      this.moveInput.dy = ky / mag;
     } else {
-      this.moveInput = { dx: 0, dy: 0 };
+      this.moveInput.dx = 0;
+      this.moveInput.dy = 0;
     }
     return this.moveInput;
   }
@@ -542,9 +633,14 @@ export class PanicArena3D {
     if (this.isDisposed || !this.container) return;
     const width = Math.max(320, this.container.clientWidth || window.innerWidth);
     const height = Math.max(320, this.container.clientHeight || window.innerHeight);
-    this.camera.aspect = width / height;
+    const aspect = width / height;
+    this.camera.aspect = aspect;
+    this.camera.fov = this.#computeCameraFov(aspect);
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(width, height);
+    if (this.isUserPaused) {
+      this.needsPausedRender = true;
+    }
   }
 
   setUserPaused(paused) {
@@ -552,6 +648,7 @@ export class PanicArena3D {
     if (this.isUserPaused) {
       this.#releaseJoystick();
       this.keysDown.clear();
+      this.needsPausedRender = true;
     } else {
       this.lastFrameTime = null;
     }
@@ -562,7 +659,7 @@ export class PanicArena3D {
     this.#finishRun(false);
   }
 
-  // MARK: - Bucle Principal (60/120 Hz)
+  // MARK: - Bucle Principal (60/120 Hz) + DPR Adaptativo
 
   #startLoop() {
     let prevVisualMs = null;
@@ -570,10 +667,21 @@ export class PanicArena3D {
       if (this.isDisposed) return;
       this.rafId = requestAnimationFrame(tick);
 
-      const visualDt = prevVisualMs !== null ? Math.min(0.05, Math.max(0, (nowMs - prevVisualMs) * 0.001)) : 1 / 60;
+      if (this.contextLost) return;
+
+      const rawVisualMs = prevVisualMs !== null ? Math.max(0, nowMs - prevVisualMs) : 16.67;
+      const visualDt = Math.min(0.05, rawVisualMs * 0.001);
       prevVisualMs = nowMs;
 
-      if (!this.hasEnded && !this.isUserPaused) {
+      if (this.isUserPaused) {
+        if (this.needsPausedRender) {
+          this.needsPausedRender = false;
+          this.renderer.render(this.scene, this.camera);
+        }
+        return;
+      }
+
+      if (!this.hasEnded) {
         const nowSec = nowMs * 0.001;
         const rawDt = this.lastFrameTime !== null ? nowSec - this.lastFrameTime : 1 / 60;
         this.lastFrameTime = nowSec;
@@ -581,12 +689,49 @@ export class PanicArena3D {
         this.#stepSimulation(dt);
       }
 
-      if (!this.isUserPaused) {
-        this.#updateVisualFX(visualDt);
-      }
+      this.#updateVisualFX(visualDt);
+      this.#syncPools();
       this.renderer.render(this.scene, this.camera);
+
+      this.#adaptPixelRatio(rawVisualMs);
     };
     this.rafId = requestAnimationFrame(tick);
+  }
+
+  #adaptPixelRatio(frameMs) {
+    // Sólo medimos frames razonables (ignoramos saltos de cambio de pestaña)
+    if (frameMs > 180) return;
+    this.perfFrames += 1;
+    this.perfDeltaSum += frameMs;
+    if (this.perfFrames < 20) return;
+
+    const avgMs = this.perfDeltaSum / this.perfFrames;
+    if (avgMs <= 22.5 && this.perfFrames < 48) return;
+
+    this.perfFrames = 0;
+    this.perfDeltaSum = 0;
+
+    let nextDpr = this.currentPixelRatio;
+    if (avgMs > 22.5) {
+      for (let i = this.dprSteps.length - 1; i >= 0; i--) {
+        if (this.dprSteps[i] < this.currentPixelRatio - 0.05) {
+          nextDpr = this.dprSteps[i];
+          break;
+        }
+      }
+    } else if (avgMs < 13.5 && this.currentPixelRatio < this.maxPixelRatio - 0.05) {
+      for (let i = 0; i < this.dprSteps.length; i++) {
+        if (this.dprSteps[i] > this.currentPixelRatio + 0.05 && this.dprSteps[i] <= this.maxPixelRatio + 0.01) {
+          nextDpr = Math.min(this.maxPixelRatio, this.dprSteps[i]);
+          break;
+        }
+      }
+    }
+
+    if (Math.abs(nextDpr - this.currentPixelRatio) > 0.04) {
+      this.currentPixelRatio = nextDpr;
+      this.renderer.setPixelRatio(nextDpr);
+    }
   }
 
   #stepSimulation(dt) {
@@ -608,7 +753,8 @@ export class PanicArena3D {
     const move = this.#resolveMoveInput();
     const speedBonus = 1.0 + Math.min(0.30, (this.playerLevel - 1) * 0.05);
     const effectiveSpeed = BASE_PLAYER_SPEED * speedBonus;
-    this.playerVelocity = { dx: move.dx * effectiveSpeed, dy: move.dy * effectiveSpeed };
+    this.playerVelocity.dx = move.dx * effectiveSpeed;
+    this.playerVelocity.dy = move.dy * effectiveSpeed;
 
     this.playerPos.x = Math.min(
       Math.max(this.playerPos.x + this.playerVelocity.dx * dt, ARENA_BOUNDS.minX),
@@ -624,16 +770,24 @@ export class PanicArena3D {
     this.playerXPBar.tick(dt);
     this.playerLight.position.set(this.playerPos.x, 48, -this.playerPos.y);
 
-    // 2. Medición espacial y actualización del Índice de Estrés en vivo
-    let nearestDist = 999;
+    // 2. Medición espacial sin sqrt innecesarios y actualización del Índice de Estrés en vivo
+    let nearestDistSq = 999 * 999;
     let dangerCount = 0;
     let panicCount = 0;
-    for (const enemy of this.enemies) {
-      const d = Math.hypot(enemy.pos.x - this.playerPos.x, enemy.pos.y - this.playerPos.y);
-      if (d < nearestDist) nearestDist = d;
-      if (d < 120) dangerCount += 1;
-      if (d < 68) panicCount += 1;
+    const dangerSq = 120 * 120;
+    const panicSq = 68 * 68;
+    const px = this.playerPos.x;
+    const py = this.playerPos.y;
+    for (let i = 0; i < this.enemies.length; i++) {
+      const e = this.enemies[i];
+      const dx = e.pos.x - px;
+      const dy = e.pos.y - py;
+      const dSq = dx * dx + dy * dy;
+      if (dSq < nearestDistSq) nearestDistSq = dSq;
+      if (dSq < dangerSq) dangerCount += 1;
+      if (dSq < panicSq) panicCount += 1;
     }
+    const nearestDist = Math.sqrt(nearestDistSq);
 
     const stressValue = this.stressTracker.update({
       dt,
@@ -712,9 +866,9 @@ export class PanicArena3D {
   #updateCamera(lerpFactor) {
     const aspect = this.camera.aspect || 1;
     const isPortrait = aspect < 0.92;
-    const camHeight = isPortrait ? 335 : 375;
-    const camBackZ = isPortrait ? 215 : 235;
-    const lookBiasZ = isPortrait ? -24 : -10;
+    const camHeight = isPortrait ? 375 : 375;
+    const camBackZ = isPortrait ? 235 : 235;
+    const lookBiasZ = isPortrait ? -22 : -10;
 
     let shakeX = 0;
     let shakeZ = 0;
@@ -724,30 +878,32 @@ export class PanicArena3D {
       shakeZ = (Math.random() * 2 - 1) * strength;
     }
 
-    const desiredTarget = new THREE.Vector3(
+    this._desiredTarget.set(
       this.playerPos.x * 0.58 + shakeX,
       12,
       -this.playerPos.y * 0.62 + lookBiasZ + shakeZ
     );
-    const desiredCamPos = new THREE.Vector3(
+    this._desiredCamPos.set(
       this.playerPos.x * 0.58 + shakeX,
       camHeight,
       -this.playerPos.y * 0.62 + camBackZ + shakeZ
     );
 
     const alpha = Math.min(1, Math.max(0.08, lerpFactor));
-    this.cameraLookTarget.lerp(desiredTarget, alpha);
-    this.camera.position.lerp(desiredCamPos, alpha);
+    this.cameraLookTarget.lerp(this._desiredTarget, alpha);
+    this.camera.position.lerp(this._desiredCamPos, alpha);
     this.camera.lookAt(this.cameraLookTarget);
   }
 
   #animateAmbientEmbers(dt) {
     if (!this.emberPoints) return;
     const attr = this.emberPoints.geometry.getAttribute('position');
-    for (let i = 0; i < attr.count; i++) {
-      let y = attr.getY(i) + dt * 18;
+    const arr = attr.array;
+    const rise = dt * 18;
+    for (let i = 1; i < arr.length; i += 3) {
+      let y = arr[i] + rise;
       if (y > 140) y = 4;
-      attr.setY(i, y);
+      arr[i] = y;
     }
     attr.needsUpdate = true;
   }
@@ -779,27 +935,25 @@ export class PanicArena3D {
     const tierStep = Math.min(5, this.playerLevel - 1);
     const shardScale = 3.8 * (1.0 + tierStep * 0.07);
     const speed = 590.0 + tierStep * 28.0;
-    const mat = this.playerLevel >= 5
-      ? this.assets.matGold
+    const color = this.playerLevel >= 5
+      ? this._colGold
       : this.playerLevel >= 3
-        ? this.assets.matColdSilver
-        : this.assets.matIvory;
+        ? this._colColdSilver
+        : this._colIvory;
 
-    for (const offset of spreadOffsets) {
-      const shotAngle = angle + offset;
-      const sx = this.playerPos.x + Math.cos(shotAngle) * 14;
-      const sy = this.playerPos.y + Math.sin(shotAngle) * 14;
-
-      const mesh = new THREE.Mesh(this.assets.playerShardGeo, mat);
-      mesh.scale.setScalar(shardScale);
-      mesh.position.set(sx, 14, -sy);
-      mesh.rotation.y = shotAngle;
-      this.worldGroup.add(mesh);
-
+    for (let i = 0; i < spreadOffsets.length; i++) {
+      if (this.projectiles.length >= POOL_CAPS.PLAYER_PROJ) break;
+      const shotAngle = angle + spreadOffsets[i];
+      const cosA = Math.cos(shotAngle);
+      const sinA = Math.sin(shotAngle);
       this.projectiles.push({
-        mesh,
-        pos: { x: sx, y: sy },
-        vel: { dx: Math.cos(shotAngle) * speed, dy: Math.sin(shotAngle) * speed },
+        x: this.playerPos.x + cosA * 14,
+        y: this.playerPos.y + sinA * 14,
+        dx: cosA * speed,
+        dy: sinA * speed,
+        angle: shotAngle,
+        scale: shardScale,
+        color,
         remainingLife: 1.05,
         damage
       });
@@ -811,11 +965,16 @@ export class PanicArena3D {
 
   #closestEnemy(maxRange) {
     let best = null;
-    let bestDist = maxRange;
-    for (const e of this.enemies) {
-      const d = Math.hypot(e.pos.x - this.playerPos.x, e.pos.y - this.playerPos.y);
-      if (d < bestDist) {
-        bestDist = d;
+    let bestDistSq = maxRange * maxRange;
+    const px = this.playerPos.x;
+    const py = this.playerPos.y;
+    for (let i = 0; i < this.enemies.length; i++) {
+      const e = this.enemies[i];
+      const dx = e.pos.x - px;
+      const dy = e.pos.y - py;
+      const dSq = dx * dx + dy * dy;
+      if (dSq < bestDistSq) {
+        bestDistSq = dSq;
         best = e;
       }
     }
@@ -823,61 +982,75 @@ export class PanicArena3D {
   }
 
   #updateProjectiles(dt) {
-    const survivors = [];
     const minX = ARENA_BOUNDS.minX - 40;
     const maxX = ARENA_BOUNDS.maxX + 40;
     const minY = ARENA_BOUNDS.minY - 40;
     const maxY = ARENA_BOUNDS.maxY + 40;
 
-    for (const p of this.projectiles) {
+    let writeIdx = 0;
+    for (let i = 0; i < this.projectiles.length; i++) {
+      const p = this.projectiles[i];
       p.remainingLife -= dt;
-      p.pos.x += p.vel.dx * dt;
-      p.pos.y += p.vel.dy * dt;
-      p.mesh.position.set(p.pos.x, 14, -p.pos.y);
+      p.x += p.dx * dt;
+      p.y += p.dy * dt;
 
-      if (p.remainingLife <= 0 || p.pos.x < minX || p.pos.x > maxX || p.pos.y < minY || p.pos.y > maxY) {
-        this.worldGroup.remove(p.mesh);
+      if (p.remainingLife <= 0 || p.x < minX || p.x > maxX || p.y < minY || p.y > maxY) {
         continue;
       }
 
       const hitPadding = 6.5 + (p.damage - 1) * 1.2;
       let hitIdx = -1;
-      for (let i = 0; i < this.enemies.length; i++) {
-        const e = this.enemies[i];
-        const d = Math.hypot(e.pos.x - p.pos.x, e.pos.y - p.pos.y);
-        if (d <= e.hitRadius + hitPadding) {
-          hitIdx = i;
+      for (let j = 0; j < this.enemies.length; j++) {
+        const e = this.enemies[j];
+        const dx = e.pos.x - p.x;
+        const dy = e.pos.y - p.y;
+        const rad = e.hitRadius + hitPadding;
+        if (dx * dx + dy * dy <= rad * rad) {
+          hitIdx = j;
           break;
         }
       }
 
       if (hitIdx >= 0) {
-        this.#applyHitToEnemy(hitIdx, p.damage, p.vel, p.pos);
-        this.worldGroup.remove(p.mesh);
+        this.#applyHitToEnemy(hitIdx, p.damage, p.dx, p.dy, p.x, p.y);
       } else {
-        survivors.push(p);
+        this.projectiles[writeIdx++] = p;
       }
     }
-
-    this.projectiles = survivors;
+    this.projectiles.length = writeIdx;
   }
 
-  #applyHitToEnemy(index, damage, impactVel, impactPos) {
+  #applyHitToEnemy(index, damage, velDx, velDy, impactX, impactY) {
     const enemy = this.enemies[index];
     enemy.hp -= damage;
 
     const sparkColor = enemy.archetype === 'jaula' ? RELICARIO_PALETTE.oldBone : RELICARIO_PALETTE.vermilion;
-    this.#spawnBurst(impactPos.x, impactPos.y, sparkColor, 5, 85);
+    this.#spawnBurst(impactX, impactY, sparkColor, 5, 85);
 
-    const velMag = Math.max(1, Math.hypot(impactVel.dx, impactVel.dy));
+    const velMag = Math.max(1, Math.hypot(velDx, velDy));
     const knock = enemy.archetype === 'desollado' ? 5.5 : enemy.archetype === 'jaula' ? 1.2 : 4.0;
-    enemy.pos.x += (impactVel.dx / velMag) * knock;
-    enemy.pos.y += (impactVel.dy / velMag) * knock;
-    enemy.visual.root.position.set(enemy.pos.x, 0, -enemy.pos.y);
+    enemy.pos.x += (velDx / velMag) * knock;
+    enemy.pos.y += (velDy / velMag) * knock;
+    enemy.flashTimer = 0.08;
 
-    enemy.visual.triggerHitFlash();
     if (enemy.archetype === 'jaula') {
-      enemy.visual.updateArmor(enemy.hp, enemy.maxHP, enemy.pos.x, enemy.pos.y);
+      const ratio = enemy.hp / Math.max(1, enemy.maxHP);
+      let targetRibs;
+      if (ratio <= 0.30) targetRibs = 0;
+      else if (ratio > 0.78) targetRibs = 4;
+      else if (ratio > 0.62) targetRibs = 3;
+      else if (ratio > 0.45) targetRibs = 2;
+      else targetRibs = 1;
+
+      while (enemy.attachedRibs > targetRibs) {
+        enemy.attachedRibs -= 1;
+        this.#spawnDetachedRib(enemy.pos.x, enemy.pos.y, enemy.ribSpinAngle);
+      }
+      const lostCount = 4 - enemy.attachedRibs;
+      enemy.ribSpinSpeed = 1.25 * (1.0 + lostCount * 0.48);
+      if (enemy.attachedRibs === 0 && !enemy.isFrenzied) {
+        enemy.isFrenzied = true;
+      }
     }
 
     if (enemy.hp <= 0) {
@@ -896,9 +1069,12 @@ export class PanicArena3D {
       }
 
       this.#spawnBurst(enemy.pos.x, enemy.pos.y, deathColor, count, 130);
-      this.worldGroup.remove(enemy.visual.root);
-      enemy.visual.dispose();
-      this.enemies.splice(index, 1);
+      // Swap-and-pop O(1)
+      const lastIdx = this.enemies.length - 1;
+      if (index !== lastIdx) {
+        this.enemies[index] = this.enemies[lastIdx];
+      }
+      this.enemies.pop();
       this.kills += 1;
       this.#grantXP(xpValue);
     }
@@ -941,15 +1117,21 @@ export class PanicArena3D {
     const tProgress = Math.min(1, Math.max(0, this.elapsedTime / TOTAL_RUN_DURATION));
     const cooldownScale = Math.max(0.55, 1.0 - tProgress * 0.42);
 
-    let activeOrStartedLunges = this.enemies.reduce((count, e) => {
+    let activeOrStartedLunges = 0;
+    for (let i = 0; i < this.enemies.length; i++) {
+      const e = this.enemies[i];
       if (e.archetype === 'martir' && (e.stalkerPhase.type === 'lunging' || e.stalkerPhase.type === 'telegraphing')) {
-        return count + 1;
+        activeOrStartedLunges += 1;
       }
-      return count;
-    }, 0);
+    }
 
-    for (const enemy of this.enemies) {
+    for (let i = 0; i < this.enemies.length; i++) {
+      const enemy = this.enemies[i];
       enemy.age += dt;
+      if (enemy.flashTimer > 0) {
+        enemy.flashTimer = Math.max(0, enemy.flashTimer - dt);
+      }
+
       const toX = this.playerPos.x - enemy.pos.x;
       const toY = this.playerPos.y - enemy.pos.y;
       const distToPlayer = Math.max(0.001, Math.hypot(toX, toY));
@@ -966,7 +1148,7 @@ export class PanicArena3D {
           enemy.pos.x += dirX * pounceSpeed * dt;
           enemy.pos.y += dirY * pounceSpeed * dt;
           if (enemy.abilityActiveTimer <= 0) {
-            enemy.visual.setPouncing(false);
+            enemy.isPouncing = false;
           }
         } else {
           enemy.abilityCooldown -= dt;
@@ -974,7 +1156,7 @@ export class PanicArena3D {
           if (enemy.abilityCooldown <= 0 && distToPlayer < pounceTriggerRange) {
             enemy.abilityActiveTimer = 0.38;
             enemy.abilityCooldown = randomRange(2.2, 3.2) * cooldownScale;
-            enemy.visual.setPouncing(true);
+            enemy.isPouncing = true;
           } else {
             const perpX = -dirY;
             const perpY = dirX;
@@ -987,7 +1169,7 @@ export class PanicArena3D {
             facingAngle = Math.atan2(vy, vx);
           }
         }
-        enemy.visual.updateVisual(dt, enemy.age, facingAngle);
+        enemy.facingAngle = facingAngle;
       } else if (enemy.archetype === 'jaula') {
         const frenzied = enemy.hp / Math.max(1, enemy.maxHP) <= 0.30;
         const frenzyBoost = frenzied ? 1.68 + tProgress * 0.20 : 1.0;
@@ -1011,10 +1193,14 @@ export class PanicArena3D {
           if (enemy.abilityCooldown <= 0 && distToPlayer > 85 && distToPlayer < 350) {
             enemy.isSpitTelegraphing = true;
             enemy.abilityActiveTimer = 0.42;
-            enemy.visual.triggerSpitTelegraph();
+            enemy.spitPulse = 0.42;
           }
         }
-        enemy.visual.updateVisual(dt, enemy.age, angleToPlayer);
+        if (enemy.spitPulse > 0) {
+          enemy.spitPulse = Math.max(0, enemy.spitPulse - dt);
+        }
+        enemy.ribSpinAngle += dt * enemy.ribSpinSpeed;
+        enemy.facingAngle = angleToPlayer;
       } else if (enemy.archetype === 'martir') {
         const wasStalking = enemy.stalkerPhase.type === 'stalking';
         facingAngle = this.#updateStalker(
@@ -1030,26 +1216,27 @@ export class PanicArena3D {
         if (wasStalking && enemy.stalkerPhase.type === 'telegraphing') {
           activeOrStartedLunges += 1;
         }
-        enemy.visual.updateVisual(dt, enemy.age, facingAngle);
+        enemy.haloSpin += dt * 1.9;
+        enemy.facingAngle = facingAngle;
       }
 
       enemy.pos.x = Math.min(Math.max(enemy.pos.x, ARENA_BOUNDS.minX - 28), ARENA_BOUNDS.maxX + 28);
       enemy.pos.y = Math.min(Math.max(enemy.pos.y, ARENA_BOUNDS.minY - 28), ARENA_BOUNDS.maxY + 28);
-      enemy.visual.root.position.set(enemy.pos.x, 0, -enemy.pos.y);
     }
 
-    // Separación suave entre criaturas
+    // Separación suave entre criaturas (squared-distance primero para ahorrar sqrt)
     const count = this.enemies.length;
     if (count > 1) {
       for (let i = 0; i < count - 1; i++) {
+        const a = this.enemies[i];
         for (let j = i + 1; j < count; j++) {
-          const a = this.enemies[i];
           const b = this.enemies[j];
           const dx = b.pos.x - a.pos.x;
           const dy = b.pos.y - a.pos.y;
           const minDist = (a.hitRadius + b.hitRadius) * 0.85;
-          const d = Math.hypot(dx, dy);
-          if (d > 0.01 && d < minDist) {
+          const dSq = dx * dx + dy * dy;
+          if (dSq > 0.0001 && dSq < minDist * minDist) {
+            const d = Math.sqrt(dSq);
             const overlap = (minDist - d) * 0.38;
             const nx = dx / d;
             const ny = dy / d;
@@ -1057,8 +1244,6 @@ export class PanicArena3D {
             a.pos.y -= ny * overlap;
             b.pos.x += nx * overlap;
             b.pos.y += ny * overlap;
-            a.visual.root.position.set(a.pos.x, 0, -a.pos.y);
-            b.visual.root.position.set(b.pos.x, 0, -b.pos.y);
           }
         }
       }
@@ -1066,9 +1251,14 @@ export class PanicArena3D {
 
     // Colisión cuerpo a cuerpo contra el jugador
     if (this.invulnerabilityTimer <= 0) {
-      for (const enemy of this.enemies) {
-        const d = Math.hypot(enemy.pos.x - this.playerPos.x, enemy.pos.y - this.playerPos.y);
-        if (d <= enemy.hitRadius + 10.5) {
+      const px = this.playerPos.x;
+      const py = this.playerPos.y;
+      for (let i = 0; i < this.enemies.length; i++) {
+        const enemy = this.enemies[i];
+        const dx = enemy.pos.x - px;
+        const dy = enemy.pos.y - py;
+        const rad = enemy.hitRadius + 10.5;
+        if (dx * dx + dy * dy <= rad * rad) {
           let dmg = enemy.contactDamage;
           if (enemy.archetype === 'martir' && enemy.stalkerPhase.type === 'lunging') {
             dmg = 26 + Math.floor(this.elapsedTime / 24.0) * 2;
@@ -1093,21 +1283,17 @@ export class PanicArena3D {
     const speed = (frenzied ? 235.0 : 198.0) * (1.0 + tProgress * 0.30);
     const boltDamage = 14 + Math.floor(this.elapsedTime / 22.0) * 2;
 
-    for (const offset of offsets) {
-      const shotAngle = baseAngle + offset;
-      const sx = origin.x + Math.cos(shotAngle) * 18;
-      const sy = origin.y + Math.sin(shotAngle) * 18;
-
-      const mesh = new THREE.Mesh(this.assets.boneBoltGeo, this.assets.matOrange);
-      mesh.scale.setScalar(5.0);
-      mesh.position.set(sx, 14, -sy);
-      mesh.rotation.y = shotAngle;
-      this.worldGroup.add(mesh);
-
+    for (let i = 0; i < offsets.length; i++) {
+      if (this.enemyProjectiles.length >= POOL_CAPS.ENEMY_PROJ) break;
+      const shotAngle = baseAngle + offsets[i];
+      const cosA = Math.cos(shotAngle);
+      const sinA = Math.sin(shotAngle);
       this.enemyProjectiles.push({
-        mesh,
-        pos: { x: sx, y: sy },
-        vel: { dx: Math.cos(shotAngle) * speed, dy: Math.sin(shotAngle) * speed },
+        x: origin.x + cosA * 18,
+        y: origin.y + sinA * 18,
+        dx: cosA * speed,
+        dy: sinA * speed,
+        angle: shotAngle,
         remainingLife: 2.3,
         damage: boltDamage
       });
@@ -1115,36 +1301,37 @@ export class PanicArena3D {
   }
 
   #updateEnemyProjectiles(dt) {
-    const survivors = [];
     const minX = ARENA_BOUNDS.minX - 36;
     const maxX = ARENA_BOUNDS.maxX + 36;
     const minY = ARENA_BOUNDS.minY - 36;
     const maxY = ARENA_BOUNDS.maxY + 36;
+    const hitSq = 13.5 * 13.5;
+    const px = this.playerPos.x;
+    const py = this.playerPos.y;
 
-    for (const bolt of this.enemyProjectiles) {
+    let writeIdx = 0;
+    for (let i = 0; i < this.enemyProjectiles.length; i++) {
+      const bolt = this.enemyProjectiles[i];
       bolt.remainingLife -= dt;
-      bolt.pos.x += bolt.vel.dx * dt;
-      bolt.pos.y += bolt.vel.dy * dt;
-      bolt.mesh.position.set(bolt.pos.x, 14, -bolt.pos.y);
+      bolt.x += bolt.dx * dt;
+      bolt.y += bolt.dy * dt;
 
-      if (bolt.remainingLife <= 0 || bolt.pos.x < minX || bolt.pos.x > maxX || bolt.pos.y < minY || bolt.pos.y > maxY) {
-        this.worldGroup.remove(bolt.mesh);
+      if (bolt.remainingLife <= 0 || bolt.x < minX || bolt.x > maxX || bolt.y < minY || bolt.y > maxY) {
         continue;
       }
 
-      const d = Math.hypot(bolt.pos.x - this.playerPos.x, bolt.pos.y - this.playerPos.y);
-      if (d <= 13.5) {
-        this.worldGroup.remove(bolt.mesh);
+      const dx = bolt.x - px;
+      const dy = bolt.y - py;
+      if (dx * dx + dy * dy <= hitSq) {
         if (this.invulnerabilityTimer <= 0 && !this.hasEnded) {
           this.#applyDamageToPlayer(bolt.damage);
         }
         continue;
       }
 
-      survivors.push(bolt);
+      this.enemyProjectiles[writeIdx++] = bolt;
     }
-
-    this.enemyProjectiles = survivors;
+    this.enemyProjectiles.length = writeIdx;
   }
 
   #updateStalker(enemy, dt, dirX, dirY, distToPlayer, angleToPlayer, directive, canStartNewLunge) {
@@ -1153,7 +1340,7 @@ export class PanicArena3D {
     const phase = enemy.stalkerPhase;
 
     if (phase.type === 'stalking') {
-      enemy.visual.setTelegraph(false, 0);
+      enemy.telegraphActive = false;
       enemy.comboDashUsed = false;
       const tangentSign = enemy.phaseOffset > Math.PI ? 1.0 : -1.0;
       const tanX = -dirY * tangentSign;
@@ -1177,11 +1364,12 @@ export class PanicArena3D {
     if (phase.type === 'telegraphing') {
       const updatedAngle = phase.remaining > 0.16 ? angleToPlayer : phase.angle;
       phase.angle = updatedAngle;
-      enemy.visual.setTelegraph(true, Math.min(275, distToPlayer + 40));
+      enemy.telegraphActive = true;
+      enemy.telegraphDist = Math.min(275, distToPlayer + 40);
 
       phase.remaining -= dt;
       if (phase.remaining <= 0) {
-        enemy.visual.setTelegraph(false, 0);
+        enemy.telegraphActive = false;
         const dashSpeed = (510.0 + tProgress * 110.0) * Math.max(1.0, directive.enemySpeedMultiplier);
         enemy.stalkerPhase = {
           type: 'lunging',
@@ -1208,8 +1396,9 @@ export class PanicArena3D {
         const shockRadius = 34.0 + tProgress * 10.0;
         const shockDamage = 12 + Math.floor(this.elapsedTime / 25.0) * 2;
         this.#spawnShockRing(enemy.pos.x, enemy.pos.y, RELICARIO_PALETTE.vermilion, shockRadius);
-        const shockDist = Math.hypot(enemy.pos.x - this.playerPos.x, enemy.pos.y - this.playerPos.y);
-        if (shockDist <= shockRadius && this.invulnerabilityTimer <= 0 && !this.hasEnded) {
+        const sdx = enemy.pos.x - this.playerPos.x;
+        const sdy = enemy.pos.y - this.playerPos.y;
+        if (sdx * sdx + sdy * sdy <= shockRadius * shockRadius && this.invulnerabilityTimer <= 0 && !this.hasEnded) {
           this.#applyDamageToPlayer(shockDamage);
         }
 
@@ -1224,7 +1413,7 @@ export class PanicArena3D {
     }
 
     // recovering
-    enemy.visual.setTelegraph(false, 0);
+    enemy.telegraphActive = false;
     phase.remaining -= dt;
     if (phase.remaining <= 0) {
       enemy.stalkerPhase = { type: 'stalking', cooldown: randomRange(1.15, 2.05) * cooldownScale };
@@ -1281,60 +1470,54 @@ export class PanicArena3D {
       }
     }
 
-    const visual = createMedkit3D(this.assets);
-    visual.root.position.set(pos.x, 0, -pos.y);
-    this.worldGroup.add(visual.root);
-    this.medkits.push({ visual, pos, age: 0 });
+    this.medkits.push({ pos, age: 0 });
   }
 
   #updateMedkits(dt) {
-    const remaining = [];
-    for (const kit of this.medkits) {
+    let writeIdx = 0;
+    const px = this.playerPos.x;
+    const py = this.playerPos.y;
+    for (let i = 0; i < this.medkits.length; i++) {
+      const kit = this.medkits[i];
       kit.age += dt;
-      kit.visual.updateVisual(kit.age);
 
-      let dx = this.playerPos.x - kit.pos.x;
-      let dy = this.playerPos.y - kit.pos.y;
-      let d = Math.hypot(dx, dy);
+      let dx = px - kit.pos.x;
+      let dy = py - kit.pos.y;
+      let dSq = dx * dx + dy * dy;
 
-      if (d > 0.01 && d <= 96.0) {
+      if (dSq > 0.0001 && dSq <= 96.0 * 96.0) {
+        const d = Math.sqrt(dSq);
         const pullSpeed = 155.0 + (1.0 - d / 96.0) * 140.0;
         const step = Math.min(d, pullSpeed * dt);
         kit.pos.x += (dx / d) * step;
         kit.pos.y += (dy / d) * step;
-        kit.visual.root.position.set(kit.pos.x, 0, -kit.pos.y);
-        dx = this.playerPos.x - kit.pos.x;
-        dy = this.playerPos.y - kit.pos.y;
-        d = Math.hypot(dx, dy);
+        dx = px - kit.pos.x;
+        dy = py - kit.pos.y;
+        dSq = dx * dx + dy * dy;
       }
 
-      if (d <= 30.0) {
+      if (dSq <= 30.0 * 30.0) {
         const prevHP = this.playerHP;
         this.playerHP = Math.min(PLAYER_MAX_HP, this.playerHP + 28);
         const actualHeal = this.playerHP - prevHP;
         this.medkitsCollected += 1;
 
         this.#spawnBurst(kit.pos.x, kit.pos.y, RELICARIO_PALETTE.graceJade, 14, 120);
-        this.#spawnShockRing(this.playerPos.x, this.playerPos.y, RELICARIO_PALETTE.graceJade, 42);
+        this.#spawnShockRing(px, py, RELICARIO_PALETTE.graceJade, 42);
         this.#spawnPopupText(
           actualHeal > 0 ? `+${actualHeal} HP` : 'VIDA MÁX',
-          this.playerPos.x,
-          this.playerPos.y + 34,
+          px,
+          py + 34,
           RELICARIO_PALETTE.graceJade
         );
 
-        this.worldGroup.remove(kit.visual.root);
-        kit.visual.dispose();
         this.audio?.triggerHeal();
         this.#publishHUDNow(null);
-      } else if (kit.age > 16.0) {
-        this.worldGroup.remove(kit.visual.root);
-        kit.visual.dispose();
-      } else {
-        remaining.push(kit);
+      } else if (kit.age <= 16.0) {
+        this.medkits[writeIdx++] = kit;
       }
     }
-    this.medkits = remaining;
+    this.medkits.length = writeIdx;
   }
 
   #spawnEnemy(directive) {
@@ -1343,7 +1526,6 @@ export class PanicArena3D {
     const tProgress = Math.min(1, Math.max(0, this.elapsedTime / TOTAL_RUN_DURATION));
     const cooldownScale = Math.max(0.58, 1.0 - tProgress * 0.40);
 
-    let visual;
     let hp;
     let speed;
     let hitRadius;
@@ -1351,23 +1533,19 @@ export class PanicArena3D {
     let initialAbilityCD;
 
     if (archetype === 'desollado') {
-      visual = createDesollado3D(this.assets);
+      if (this.enemies.length >= POOL_CAPS.DESOLLADO + POOL_CAPS.JAULA + POOL_CAPS.MARTIR) return;
       hp = 2 + Math.floor(this.elapsedTime / 16.0) + (this.playerLevel >= 5 ? 1 : 0);
       speed = randomRange(120, 144) * (1.0 + tProgress * 0.16);
       hitRadius = 12.5;
       contactDamage = 14 + Math.floor(this.elapsedTime / 20.0) * 2;
       initialAbilityCD = randomRange(1.4, 2.6) * cooldownScale;
     } else if (archetype === 'jaula') {
-      visual = createJaula3D(this.assets, (rx, ry, spinAngle) => {
-        this.#spawnDetachedRib(rx, ry, spinAngle);
-      });
       hp = 18 + Math.floor(tProgress * 16.0);
       speed = randomRange(62, 72) * (1.0 + tProgress * 0.18);
       hitRadius = 25.5;
       contactDamage = 24 + Math.floor(this.elapsedTime / 25.0) * 3;
       initialAbilityCD = randomRange(2.2, 3.4) * cooldownScale;
     } else {
-      visual = createMartir3D(this.assets);
       hp = 9 + Math.floor(tProgress * 8.0);
       speed = randomRange(102, 118) * (1.0 + tProgress * 0.16);
       hitRadius = 16.5;
@@ -1375,12 +1553,8 @@ export class PanicArena3D {
       initialAbilityCD = randomRange(1.1, 1.8) * cooldownScale;
     }
 
-    visual.root.position.set(spawnPoint.x, 0, -spawnPoint.y);
-    this.worldGroup.add(visual.root);
-
     this.enemies.push({
       archetype,
-      visual,
       pos: spawnPoint,
       hp,
       maxHP: hp,
@@ -1393,7 +1567,18 @@ export class PanicArena3D {
       abilityActiveTimer: 0,
       isSpitTelegraphing: false,
       comboDashUsed: false,
-      stalkerPhase: { type: 'stalking', cooldown: initialAbilityCD }
+      stalkerPhase: { type: 'stalking', cooldown: initialAbilityCD },
+      facingAngle: Math.atan2(this.playerPos.y - spawnPoint.y, this.playerPos.x - spawnPoint.x),
+      flashTimer: 0,
+      isPouncing: false,
+      attachedRibs: 4,
+      ribSpinAngle: 0,
+      ribSpinSpeed: 1.25,
+      isFrenzied: false,
+      spitPulse: 0,
+      telegraphActive: false,
+      telegraphDist: 0,
+      haloSpin: 0
     });
   }
 
@@ -1436,28 +1621,26 @@ export class PanicArena3D {
     return { x, y };
   }
 
-  // MARK: - Efectos Visuales 3D Efímeros (Chispas, Ondas, Costillas, Fantasmas y Textos)
+  // MARK: - Efectos Visuales 3D Efímeros en Pools Instanciados
 
   #spawnBurst(x, y, colorHex, count, speedScale) {
-    const color = new THREE.Color(colorHex);
-    for (let i = 0; i < count; i++) {
-      const mat = new THREE.MeshBasicMaterial({
-        color,
-        transparent: true,
-        opacity: 0.92
-      });
-      const mesh = new THREE.Mesh(this.assets.octaUnit, mat);
-      const size = randomRange(2.0, 4.4);
-      mesh.scale.setScalar(size);
-      mesh.position.set(x, randomRange(8, 22), -y);
-      this.worldGroup.add(mesh);
+    this._colScratch.set(colorHex);
+    const cr = this._colScratch.r;
+    const cg = this._colScratch.g;
+    const cb = this._colScratch.b;
 
+    for (let i = 0; i < count; i++) {
+      if (this.particles.length >= POOL_CAPS.PARTICLES) break;
       const angle = randomRange(0, Math.PI * 2);
       const speed = randomRange(speedScale * 0.45, speedScale);
-      this.effects.push({
-        type: 'particle',
-        mesh,
-        mat,
+      this.particles.push({
+        x,
+        y: randomRange(8, 22),
+        z: -y,
+        size: randomRange(2.0, 4.4),
+        cr,
+        cg,
+        cb,
         vx: Math.cos(angle) * speed,
         vy: randomRange(45, 110),
         vz: -Math.sin(angle) * speed,
@@ -1468,22 +1651,11 @@ export class PanicArena3D {
   }
 
   #spawnShockRing(x, y, colorHex, maxRadius) {
-    const mat = new THREE.MeshBasicMaterial({
-      color: colorHex,
-      transparent: true,
-      opacity: 0.85,
-      side: THREE.DoubleSide,
-      depthWrite: false
-    });
-    const mesh = new THREE.Mesh(this.assets.ringGround, mat);
-    mesh.position.set(x, 1.8, -y);
-    mesh.scale.setScalar(6);
-    this.worldGroup.add(mesh);
-
-    this.effects.push({
-      type: 'ring',
-      mesh,
-      mat,
+    if (this.shockRings.length >= 24) return;
+    this.shockRings.push({
+      x,
+      z: -y,
+      color: new THREE.Color(colorHex),
       maxRadius,
       life: 0,
       maxLife: 0.34
@@ -1491,15 +1663,16 @@ export class PanicArena3D {
   }
 
   #spawnDetachedRib(x, y, spinAngle) {
-    const mesh = new THREE.Mesh(this.assets.jaulaRibGeo, this.assets.matOldBone);
-    mesh.position.set(x, 16, -y);
-    mesh.rotation.y = spinAngle;
-    this.worldGroup.add(mesh);
+    if (this.detachedRibs.length >= 48) return;
     const outAngle = randomRange(0, Math.PI * 2);
     const speed = randomRange(90, 150);
-    this.effects.push({
-      type: 'rib',
-      mesh,
+    this.detachedRibs.push({
+      x,
+      y: 16,
+      z: -y,
+      rotX: 0,
+      rotY: spinAngle,
+      scale: 1,
       vx: Math.cos(outAngle) * speed,
       vy: randomRange(65, 120),
       vz: -Math.sin(outAngle) * speed,
@@ -1509,79 +1682,178 @@ export class PanicArena3D {
   }
 
   #spawnGhostTrail(x, y, facingAngle) {
-    const mat = new THREE.MeshBasicMaterial({
-      color: RELICARIO_PALETTE.vermilion,
-      transparent: true,
-      opacity: 0.45,
-      depthWrite: false
-    });
-    const mesh = new THREE.Mesh(this.assets.coneUnit, mat);
-    mesh.scale.set(10, 14, 10);
-    mesh.position.set(x, 13, -y);
-    mesh.rotation.y = facingAngle + Math.PI * 0.5;
-    this.worldGroup.add(mesh);
-
-    this.effects.push({
-      type: 'ghost',
-      mesh,
-      mat,
+    if (this.ghostTrails.length >= POOL_CAPS.GHOSTS) return;
+    this.ghostTrails.push({
+      x,
+      z: -y,
+      facingAngle,
       life: 0,
       maxLife: 0.22
     });
   }
 
   #spawnPopupText(text, x, y, colorHex) {
-    const popup = createFloatingTextSprite3D(text, colorHex);
-    popup.sprite.position.set(x, 42, -y);
-    this.worldGroup.add(popup.sprite);
-    this.effects.push({
-      type: 'popup',
-      mesh: popup.sprite,
-      popup,
-      life: 0,
-      maxLife: 0.72
-    });
+    let slot = null;
+    for (let i = 0; i < this.popupPool.length; i++) {
+      if (!this.popupPool[i].inUse) {
+        slot = this.popupPool[i];
+        break;
+      }
+    }
+    if (!slot) {
+      slot = this.popupPool[0];
+    }
+
+    slot.inUse = true;
+    slot.life = 0;
+    slot.maxLife = 0.72;
+    slot.material.map = this.assets.getPopupTexture(text, colorHex);
+    slot.material.opacity = 1;
+    slot.sprite.position.set(x, 42, -y);
+    slot.sprite.visible = true;
+    if (!this.activePopups.includes(slot)) {
+      this.activePopups.push(slot);
+    }
   }
 
   #updateVisualFX(dt) {
-    if (this.effects.length === 0) return;
-    const active = [];
-    for (const fx of this.effects) {
-      fx.life += dt;
-      const t = Math.min(1, fx.life / fx.maxLife);
-      if (t >= 1) {
-        this.worldGroup.remove(fx.mesh);
-        if (fx.mat) fx.mat.dispose();
-        if (fx.popup) fx.popup.dispose();
-        continue;
+    // Partículas
+    let pw = 0;
+    for (let i = 0; i < this.particles.length; i++) {
+      const p = this.particles[i];
+      p.life += dt;
+      if (p.life < p.maxLife) {
+        p.x += p.vx * dt;
+        p.y = Math.max(1, p.y + p.vy * dt);
+        p.vy -= 260 * dt;
+        p.z += p.vz * dt;
+        this.particles[pw++] = p;
       }
-
-      if (fx.type === 'particle') {
-        fx.mesh.position.x += fx.vx * dt;
-        fx.mesh.position.y = Math.max(1, fx.mesh.position.y + fx.vy * dt);
-        fx.vy -= 260 * dt;
-        fx.mesh.position.z += fx.vz * dt;
-        fx.mat.opacity = (1 - t) * 0.92;
-      } else if (fx.type === 'ring') {
-        fx.mesh.scale.setScalar(6 + (fx.maxRadius - 6) * t);
-        fx.mat.opacity = (1 - t) * 0.85;
-      } else if (fx.type === 'rib') {
-        fx.mesh.position.x += fx.vx * dt;
-        fx.mesh.position.y = Math.max(2, fx.mesh.position.y + fx.vy * dt);
-        fx.vy -= 300 * dt;
-        fx.mesh.position.z += fx.vz * dt;
-        fx.mesh.rotation.x += dt * 7;
-        fx.mesh.scale.setScalar(1 - t * 0.75);
-      } else if (fx.type === 'ghost') {
-        fx.mat.opacity = (1 - t) * 0.45;
-        fx.mesh.scale.setScalar((1 - t * 0.35) * 10);
-      } else if (fx.type === 'popup') {
-        fx.mesh.position.y += dt * 36;
-        fx.popup.material.opacity = 1 - t * t;
-      }
-      active.push(fx);
     }
-    this.effects = active;
+    this.particles.length = pw;
+
+    // Ondas de choque
+    let rw = 0;
+    for (let i = 0; i < this.shockRings.length; i++) {
+      const r = this.shockRings[i];
+      r.life += dt;
+      if (r.life < r.maxLife) {
+        this.shockRings[rw++] = r;
+      }
+    }
+    this.shockRings.length = rw;
+
+    // Costillas desprendidas
+    let bw = 0;
+    for (let i = 0; i < this.detachedRibs.length; i++) {
+      const rib = this.detachedRibs[i];
+      rib.life += dt;
+      const t = rib.life / rib.maxLife;
+      if (t < 1) {
+        rib.x += rib.vx * dt;
+        rib.y = Math.max(2, rib.y + rib.vy * dt);
+        rib.vy -= 300 * dt;
+        rib.z += rib.vz * dt;
+        rib.rotX += dt * 7;
+        rib.scale = 1 - t * 0.75;
+        this.detachedRibs[bw++] = rib;
+      }
+    }
+    this.detachedRibs.length = bw;
+
+    // Estelas fantasma
+    let gw = 0;
+    for (let i = 0; i < this.ghostTrails.length; i++) {
+      const g = this.ghostTrails[i];
+      g.life += dt;
+      if (g.life < g.maxLife) {
+        this.ghostTrails[gw++] = g;
+      }
+    }
+    this.ghostTrails.length = gw;
+
+    // Popups flotantes en pool
+    let popW = 0;
+    for (let i = 0; i < this.activePopups.length; i++) {
+      const pop = this.activePopups[i];
+      pop.life += dt;
+      const t = pop.life / pop.maxLife;
+      if (t >= 1) {
+        pop.inUse = false;
+        pop.sprite.visible = false;
+      } else {
+        pop.sprite.position.y += dt * 36;
+        pop.material.opacity = 1 - t * t;
+        this.activePopups[popW++] = pop;
+      }
+    }
+    this.activePopups.length = popW;
+  }
+
+  #syncPools() {
+    const pools = this.pools;
+    pools.resetFrameCounts();
+
+    // Halos estáticos (altar + 8 pebeteros)
+    for (let i = 0; i < this.staticGlows.length; i++) {
+      const g = this.staticGlows[i];
+      pools.addGlow(g.x, g.y, g.z, g.size, g.color, g.opacity);
+    }
+
+    // Enemigos
+    for (let i = 0; i < this.enemies.length; i++) {
+      const enemy = this.enemies[i];
+      if (enemy.archetype === 'desollado') {
+        pools.addDesollado(enemy);
+      } else if (enemy.archetype === 'jaula') {
+        pools.addJaula(enemy);
+      } else {
+        pools.addMartir(enemy);
+      }
+    }
+
+    // Botiquines
+    for (let i = 0; i < this.medkits.length; i++) {
+      pools.addMedkit(this.medkits[i]);
+    }
+
+    // Proyectiles
+    for (let i = 0; i < this.projectiles.length; i++) {
+      const p = this.projectiles[i];
+      pools.addPlayerProjectile(p.x, p.y, p.angle, p.scale, p.color);
+    }
+    for (let i = 0; i < this.enemyProjectiles.length; i++) {
+      const b = this.enemyProjectiles[i];
+      pools.addEnemyProjectile(b.x, b.y, b.angle);
+    }
+
+    // Partículas (atenuación por color + escala)
+    for (let i = 0; i < this.particles.length; i++) {
+      const p = this.particles[i];
+      const invT = 1 - p.life / p.maxLife;
+      pools.addParticle(p.x, p.y, p.z, p.size * (0.45 + 0.55 * invT), p.cr * invT, p.cg * invT, p.cb * invT);
+    }
+
+    // Ondas de choque
+    for (let i = 0; i < this.shockRings.length; i++) {
+      const r = this.shockRings[i];
+      const t = r.life / r.maxLife;
+      pools.addRing(r.x, 1.8, r.z, 6 + (r.maxRadius - 6) * t, 0, r.color, (1 - t) * 0.85);
+    }
+
+    // Costillas sueltas
+    for (let i = 0; i < this.detachedRibs.length; i++) {
+      pools.addDetachedRib(this.detachedRibs[i]);
+    }
+
+    // Fantasmas del Mártir
+    for (let i = 0; i < this.ghostTrails.length; i++) {
+      const g = this.ghostTrails[i];
+      const t = g.life / g.maxLife;
+      pools.addGhost(g.x, g.z, g.facingAngle, 1 - t * 0.35, (1 - t) * 0.45);
+    }
+
+    pools.commit();
   }
 
   // MARK: - Telemetría HUD y Cierre
@@ -1658,9 +1930,13 @@ export class PanicArena3D {
     window.removeEventListener('keydown', this._onKeyDown);
     window.removeEventListener('keyup', this._onKeyUp);
     window.removeEventListener('blur', this._onWindowBlur);
+    document.removeEventListener('visibilitychange', this._onVisibilityChange);
 
     const dom = this.renderer?.domElement;
     if (dom) {
+      dom.removeEventListener('contextmenu', this._onContextMenu);
+      dom.removeEventListener('webglcontextlost', this._onWebGLContextLost);
+      dom.removeEventListener('webglcontextrestored', this._onWebGLContextRestored);
       dom.removeEventListener('pointerdown', this._onPointerDown);
       dom.removeEventListener('pointermove', this._onPointerMove);
       dom.removeEventListener('pointerup', this._onPointerEnd);
@@ -1670,12 +1946,13 @@ export class PanicArena3D {
       }
     }
 
-    for (const e of this.enemies) e.visual.dispose();
-    for (const k of this.medkits) k.visual.dispose();
-    for (const fx of this.effects) {
-      if (fx.mat) fx.mat.dispose();
-      if (fx.popup) fx.popup.dispose();
+    for (const pop of this.popupPool) {
+      pop.material.dispose();
     }
+    if (this.staticInstancedMeshes) {
+      for (const m of this.staticInstancedMeshes) m.dispose();
+    }
+    this.pools?.dispose();
     this.playerXPBar?.dispose();
     this.assets?.dispose();
     this.renderer?.dispose();

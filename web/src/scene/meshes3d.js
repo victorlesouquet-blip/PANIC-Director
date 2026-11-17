@@ -1,26 +1,86 @@
-// Modelos 3D 100% procedurales en Three.js para los 12 avatares, 3 arquetipos grotescos, botiquines, proyectiles y barra XP flotante
+// Modelos 3D 100% procedurales en Three.js con InstancedMesh, materiales Lambert/Phong rápidos, pools sin GC y barra XP optimizada
 
 import * as THREE from 'three';
 import { PLAYER_AVATAR_MAP, RELICARIO_PALETTE } from '../engine/constants.js';
+
+const _dummy = new THREE.Object3D();
+const _mat4 = new THREE.Matrix4();
+const _quat = new THREE.Quaternion();
+const _euler = new THREE.Euler();
+const _pos = new THREE.Vector3();
+const _scale = new THREE.Vector3();
+const _color = new THREE.Color();
+
+function createShareableInstancedGeo(baseGeo, attrName, array) {
+  const geo = new THREE.BufferGeometry();
+  geo.index = baseGeo.index;
+  for (const key in baseGeo.attributes) {
+    geo.setAttribute(key, baseGeo.attributes[key]);
+  }
+  const attr = new THREE.InstancedBufferAttribute(array, 1);
+  attr.setUsage(THREE.DynamicDrawUsage);
+  geo.setAttribute(attrName, attr);
+  return { geo, attr };
+}
+
+function createFlashableLambertMaterial(opts) {
+  const mat = new THREE.MeshLambertMaterial(opts);
+  mat.customProgramCacheKey = () => 'panic-flash-lambert-v1';
+  mat.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute float aFlash;\nvarying float vFlash;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvFlash = aFlash;');
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying float vFlash;')
+      .replace('#include <opaque_fragment>', 'outgoingLight = mix(outgoingLight, vec3(1.5), vFlash);\n#include <opaque_fragment>');
+  };
+  return mat;
+}
+
+function createInstancedOpacityBasicMaterial(opts) {
+  const mat = new THREE.MeshBasicMaterial(opts);
+  mat.customProgramCacheKey = () => 'panic-opacity-basic-v1';
+  mat.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute float aOpacity;\nvarying float vOpacity;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvOpacity = aOpacity;');
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying float vOpacity;')
+      .replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.a *= vOpacity;');
+  };
+  return mat;
+}
+
+function drawCrispText(ctx, text, x, y, colorHex) {
+  ctx.fillStyle = 'rgba(0,0,0,0.92)';
+  ctx.fillText(text, x + 1.5, y + 1.5);
+  ctx.fillStyle = colorHex;
+  ctx.fillText(text, x, y);
+}
 
 export class SharedThreeAssets {
   constructor() {
     this.geometries = [];
     this.materials = [];
     this.textures = [];
+    this.popupTexCache = new Map();
 
-    // Geometrías comunes para entidades repetidas (rendimiento móvil 60fps)
-    this.sphereUnit = this.#trackGeo(new THREE.SphereGeometry(1, 14, 12));
+    // Geometrías optimizadas para renderizado 60/120fps con siluetas 3D nítidas
+    this.sphereUnit = this.#trackGeo(new THREE.SphereGeometry(1, 10, 8));
     this.icosaUnit = this.#trackGeo(new THREE.IcosahedronGeometry(1, 1));
     this.octaUnit = this.#trackGeo(new THREE.OctahedronGeometry(1, 0));
-    this.coneUnit = this.#trackGeo(new THREE.ConeGeometry(1, 2, 10));
-    this.cylUnit = this.#trackGeo(new THREE.CylinderGeometry(1, 1, 1, 10));
+    this.coneUnit = this.#trackGeo(new THREE.ConeGeometry(1, 2, 8));
+    this.cylUnit = this.#trackGeo(new THREE.CylinderGeometry(1, 1, 1, 8));
     this.boxUnit = this.#trackGeo(new THREE.BoxGeometry(1, 1, 1));
-    this.torusUnit = this.#trackGeo(new THREE.TorusGeometry(1, 0.14, 8, 28));
-    this.ringGround = this.#trackGeo(new THREE.RingGeometry(0.78, 1.0, 28));
+    this.torusUnit = this.#trackGeo(new THREE.TorusGeometry(1, 0.14, 6, 20));
+    this.ringGround = this.#trackGeo(new THREE.RingGeometry(0.78, 1.0, 24));
     this.ringGround.rotateX(-Math.PI / 2);
 
-    // Ala dentada ósea 3D del Desollado
+    // Plano horizontal para halos luminosos en el suelo (1 solo draw call instanciado)
+    this.glowQuadGeo = this.#trackGeo(new THREE.PlaneGeometry(1, 1));
+    this.glowQuadGeo.rotateX(-Math.PI / 2);
+
+    // Ala dentada ósea 3D del Desollado (centrada en Z=0 para simetría sin escala negativa)
     const wingShape = new THREE.Shape();
     wingShape.moveTo(0, 0);
     wingShape.lineTo(-4, 12);
@@ -30,11 +90,11 @@ export class SharedThreeAssets {
     wingShape.lineTo(-3, 2);
     wingShape.closePath();
     this.desolladoWingGeo = this.#trackGeo(
-      new THREE.ExtrudeGeometry(wingShape, { depth: 1.8, bevelEnabled: false })
+      new THREE.ExtrudeGeometry(wingShape, { depth: 1.8, bevelEnabled: false, curveSegments: 4 })
     );
     this.desolladoWingGeo.center();
 
-    // Costilla mandibular curvada 3D de la Jaula de Vísceras
+    // Costilla mandibular curvada 3D de la Jaula de Vísceras (sin bevel costoso)
     const ribShape = new THREE.Shape();
     ribShape.moveTo(-4, 15);
     ribShape.lineTo(0, 27);
@@ -45,7 +105,7 @@ export class SharedThreeAssets {
     ribShape.lineTo(3, 16);
     ribShape.closePath();
     this.jaulaRibGeo = this.#trackGeo(
-      new THREE.ExtrudeGeometry(ribShape, { depth: 4.5, bevelEnabled: true, bevelSize: 0.6, bevelThickness: 0.6, bevelSegments: 1 })
+      new THREE.ExtrudeGeometry(ribShape, { depth: 4.2, bevelEnabled: false, curveSegments: 4 })
     );
 
     // Proyectil shard 3D del jugador
@@ -57,24 +117,29 @@ export class SharedThreeAssets {
     this.boneBoltGeo.scale(1.6, 0.6, 0.6);
 
     // Halo roto del Mártir (dos arcos 3D)
-    this.martirHaloArc1 = this.#trackGeo(new THREE.TorusGeometry(13.5, 1.15, 7, 18, Math.PI * 0.75));
-    this.martirHaloArc2 = this.#trackGeo(new THREE.TorusGeometry(10.5, 0.95, 7, 14, Math.PI * 0.56));
+    this.martirHaloArc1 = this.#trackGeo(new THREE.TorusGeometry(13.5, 1.15, 6, 16, Math.PI * 0.75));
+    this.martirHaloArc2 = this.#trackGeo(new THREE.TorusGeometry(10.5, 0.95, 6, 12, Math.PI * 0.56));
 
     // Textura radial brillante compartida para halos en el suelo
     this.radialGlowTex = this.#createRadialGlowTexture();
 
-    // Materiales compartidos
-    this.matVoid = this.#mat({ color: RELICARIO_PALETTE.voidBlack, roughness: 0.55, metalness: 0.25 });
-    this.matDarkFlesh = this.#mat({ color: '#2B151A', emissive: '#3D0914', emissiveIntensity: 0.4, roughness: 0.65 });
-    this.matIvory = this.#mat({ color: RELICARIO_PALETTE.ivory, emissive: '#3B342D', emissiveIntensity: 0.22, roughness: 0.45 });
-    this.matOldBone = this.#mat({ color: RELICARIO_PALETTE.oldBone, emissive: '#3A2A1C', emissiveIntensity: 0.25, roughness: 0.52 });
-    this.matVermilion = this.#mat({ color: RELICARIO_PALETTE.vermilion, emissive: RELICARIO_PALETTE.vermilion, emissiveIntensity: 0.68, roughness: 0.35 });
-    this.matVisceral = this.#mat({ color: RELICARIO_PALETTE.visceralCore, emissive: '#8A0219', emissiveIntensity: 0.62, roughness: 0.4 });
-    this.matGold = this.#mat({ color: RELICARIO_PALETTE.liturgicalGold, emissive: RELICARIO_PALETTE.liturgicalGold, emissiveIntensity: 0.65, metalness: 0.4, roughness: 0.3 });
-    this.matColdSilver = this.#mat({ color: RELICARIO_PALETTE.coldSilver, emissive: RELICARIO_PALETTE.coldSilver, emissiveIntensity: 0.52, roughness: 0.32 });
-    this.matGraceJade = this.#mat({ color: RELICARIO_PALETTE.graceJade, emissive: RELICARIO_PALETTE.graceJade, emissiveIntensity: 0.75, roughness: 0.25 });
-    this.matOrange = this.#mat({ color: RELICARIO_PALETTE.emberOrange, emissive: RELICARIO_PALETTE.emberOrange, emissiveIntensity: 0.6, roughness: 0.35 });
-    this.matFlashWhite = this.#mat({ color: '#FFFFFF', emissive: '#FFFFFF', emissiveIntensity: 1.0, roughness: 0.1 });
+    // Textura blanca 1x1 para barra XP sin re-subidas a GPU
+    const whiteData = new Uint8Array([255, 255, 255, 255]);
+    this.white1x1Tex = new THREE.DataTexture(whiteData, 1, 1);
+    this.white1x1Tex.needsUpdate = true;
+    this.textures.push(this.white1x1Tex);
+
+    // Materiales compartidos rápidos (Lambert/Phong en lugar de PBR Standard pesado)
+    this.matVoid = this.#lambert({ color: RELICARIO_PALETTE.voidBlack });
+    this.matDarkFlesh = this.#lambert({ color: '#2B151A', emissive: '#3D0914', emissiveIntensity: 0.45 });
+    this.matIvory = this.#phong({ color: RELICARIO_PALETTE.ivory, emissive: '#3B342D', emissiveIntensity: 0.25, shininess: 28 });
+    this.matOldBone = this.#lambert({ color: RELICARIO_PALETTE.oldBone, emissive: '#3A2A1C', emissiveIntensity: 0.28 });
+    this.matVermilion = this.#phong({ color: RELICARIO_PALETTE.vermilion, emissive: RELICARIO_PALETTE.vermilion, emissiveIntensity: 0.68, shininess: 42 });
+    this.matVisceral = this.#phong({ color: RELICARIO_PALETTE.visceralCore, emissive: '#8A0219', emissiveIntensity: 0.62, shininess: 35 });
+    this.matGold = this.#phong({ color: RELICARIO_PALETTE.liturgicalGold, emissive: RELICARIO_PALETTE.liturgicalGold, emissiveIntensity: 0.65, shininess: 55 });
+    this.matColdSilver = this.#phong({ color: RELICARIO_PALETTE.coldSilver, emissive: RELICARIO_PALETTE.coldSilver, emissiveIntensity: 0.52, shininess: 48 });
+    this.matGraceJade = this.#phong({ color: RELICARIO_PALETTE.graceJade, emissive: RELICARIO_PALETTE.graceJade, emissiveIntensity: 0.72, shininess: 50 });
+    this.matOrange = this.#phong({ color: RELICARIO_PALETTE.emberOrange, emissive: RELICARIO_PALETTE.emberOrange, emissiveIntensity: 0.62, shininess: 38 });
   }
 
   #trackGeo(geo) {
@@ -82,8 +147,19 @@ export class SharedThreeAssets {
     return geo;
   }
 
-  #mat(opts) {
-    const m = new THREE.MeshStandardMaterial(opts);
+  trackGeometry(geo) {
+    this.geometries.push(geo);
+    return geo;
+  }
+
+  #lambert(opts) {
+    const m = new THREE.MeshLambertMaterial(opts);
+    this.materials.push(m);
+    return m;
+  }
+
+  #phong(opts) {
+    const m = new THREE.MeshPhongMaterial(opts);
     this.materials.push(m);
     return m;
   }
@@ -91,6 +167,28 @@ export class SharedThreeAssets {
   trackMaterial(mat) {
     this.materials.push(mat);
     return mat;
+  }
+
+  getPopupTexture(text, colorHex) {
+    const key = `${text}|${colorHex}`;
+    let tex = this.popupTexCache.get(key);
+    if (tex) return tex;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 56;
+    const ctx = canvas.getContext('2d');
+    ctx.font = 'bold 26px "JetBrains Mono", Menlo, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    drawCrispText(ctx, text, 128, 28, colorHex);
+
+    tex = new THREE.CanvasTexture(canvas);
+    tex.minFilter = THREE.LinearFilter;
+    tex.colorSpace = THREE.SRGBColorSpace;
+    this.popupTexCache.set(key, tex);
+    this.textures.push(tex);
+    return tex;
   }
 
   #createRadialGlowTexture() {
@@ -105,6 +203,7 @@ export class SharedThreeAssets {
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, 96, 96);
     const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
     this.textures.push(tex);
     return tex;
   }
@@ -113,34 +212,55 @@ export class SharedThreeAssets {
     for (const g of this.geometries) g.dispose();
     for (const m of this.materials) m.dispose();
     for (const t of this.textures) t.dispose();
+    this.popupTexCache.clear();
   }
 }
 
-// MARK: - Barra de XP y Nivel flotante en 3D sobre el jugador
+// MARK: - Barra de XP y Nivel flotante en 3D sobre el jugador (cero re-dibujos por frame)
 
 export class PlayerXPBar3D {
-  constructor() {
+  constructor(assets) {
+    this.group = new THREE.Group();
+    // Compatibilidad de propiedad .sprite para posicionamiento en mundo
+    this.sprite = this.group;
+
     this.canvas = document.createElement('canvas');
     this.canvas.width = 160;
     this.canvas.height = 52;
     this.ctx = this.canvas.getContext('2d');
     this.texture = new THREE.CanvasTexture(this.canvas);
     this.texture.minFilter = THREE.LinearFilter;
-    this.material = new THREE.SpriteMaterial({
+    this.texture.colorSpace = THREE.SRGBColorSpace;
+
+    this.badgeMaterial = new THREE.SpriteMaterial({
       map: this.texture,
       transparent: true,
       depthTest: false,
       depthWrite: false
     });
-    this.sprite = new THREE.Sprite(this.material);
-    this.sprite.scale.set(52, 17, 1);
-    this.sprite.renderOrder = 20;
+    this.badgeSprite = new THREE.Sprite(this.badgeMaterial);
+    this.badgeSprite.scale.set(52, 17, 1);
+    this.badgeSprite.renderOrder = 20;
+    this.group.add(this.badgeSprite);
+
+    this.fillMaterial = new THREE.SpriteMaterial({
+      map: assets.white1x1Tex,
+      color: RELICARIO_PALETTE.coldSilver,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false
+    });
+    this.fillSprite = new THREE.Sprite(this.fillMaterial);
+    this.fillSprite.renderOrder = 21;
+    this.group.add(this.fillSprite);
 
     this.currentProgress = 0;
     this.targetProgress = 0;
     this.level = 1;
+    this.drawnLevel = -1;
     this.pulseTimer = 0;
-    this.#redraw();
+    this.#redrawFrame();
+    this.#syncFillSprite(1);
   }
 
   updateXP(progress, level, leveledUp = false) {
@@ -150,39 +270,58 @@ export class PlayerXPBar3D {
       this.pulseTimer = 0.35;
       this.currentProgress = this.targetProgress;
     }
-    this.#redraw();
+    if (this.drawnLevel !== this.level) {
+      this.#redrawFrame();
+      this.fillMaterial.color.set(this.level >= 3 ? RELICARIO_PALETTE.liturgicalGold : RELICARIO_PALETTE.coldSilver);
+    }
+    this.#syncFillSprite(this.#pulseScale());
   }
 
   tick(dt) {
-    let dirty = false;
-    if (Math.abs(this.currentProgress - this.targetProgress) > 0.005) {
+    let changed = false;
+    if (Math.abs(this.currentProgress - this.targetProgress) > 0.004) {
       this.currentProgress += (this.targetProgress - this.currentProgress) * Math.min(1, dt * 12);
-      dirty = true;
+      changed = true;
     }
     if (this.pulseTimer > 0) {
       this.pulseTimer = Math.max(0, this.pulseTimer - dt);
-      const s = 1 + Math.sin((this.pulseTimer / 0.35) * Math.PI) * 0.28;
-      this.sprite.scale.set(52 * s, 17 * s, 1);
-      dirty = true;
+      changed = true;
     }
-    if (dirty) this.#redraw();
+    if (changed) {
+      const s = this.#pulseScale();
+      this.badgeSprite.scale.set(52 * s, 17 * s, 1);
+      this.#syncFillSprite(s);
+    }
   }
 
-  #redraw() {
+  #pulseScale() {
+    if (this.pulseTimer <= 0) return 1;
+    return 1 + Math.sin((this.pulseTimer / 0.35) * Math.PI) * 0.28;
+  }
+
+  #syncFillSprite(s) {
+    const fillW = 38.35 * this.currentProgress * s;
+    if (fillW <= 0.25) {
+      this.fillSprite.visible = false;
+      return;
+    }
+    this.fillSprite.visible = true;
+    this.fillSprite.scale.set(fillW, 2.615 * s, 1);
+    this.fillSprite.center.set((19.175 * s) / fillW, 1.75);
+  }
+
+  #redrawFrame() {
     const { ctx, canvas } = this;
+    this.drawnLevel = this.level;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Nivel
+    // Nivel (sin ctx.shadowBlur para evitar blur CPU por cada frame)
     ctx.font = 'bold 20px "JetBrains Mono", Menlo, monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';
-    ctx.fillStyle = RELICARIO_PALETTE.liturgicalGold;
-    ctx.shadowColor = 'rgba(0,0,0,0.9)';
-    ctx.shadowBlur = 4;
-    ctx.fillText(`NV.${this.level}`, canvas.width / 2, 24);
-    ctx.shadowBlur = 0;
+    drawCrispText(ctx, `NV.${this.level}`, canvas.width / 2, 24, RELICARIO_PALETTE.liturgicalGold);
 
-    // Fondo barra XP
+    // Marco barra XP
     const bx = 18;
     const by = 29;
     const bw = 124;
@@ -195,20 +334,13 @@ export class PlayerXPBar3D {
     ctx.fill();
     ctx.stroke();
 
-    // Relleno XP
-    const fillW = Math.max(0, (bw - 6) * this.currentProgress);
-    if (fillW > 0.5) {
-      ctx.fillStyle = this.level >= 3 ? RELICARIO_PALETTE.liturgicalGold : RELICARIO_PALETTE.coldSilver;
-      ctx.beginPath();
-      ctx.roundRect(bx + 3, by + 3, fillW, bh - 6, 4);
-      ctx.fill();
-    }
     this.texture.needsUpdate = true;
   }
 
   dispose() {
     this.texture.dispose();
-    this.material.dispose();
+    this.badgeMaterial.dispose();
+    this.fillMaterial.dispose();
   }
 }
 
@@ -226,9 +358,9 @@ export function buildPlayerAvatar3D(avatarId, assets) {
   const auraMat = new THREE.MeshBasicMaterial({
     color: auraColor,
     transparent: true,
-    opacity: 0.42,
-    side: THREE.DoubleSide,
-    depthWrite: false
+    opacity: 0.44,
+    depthWrite: false,
+    fog: false
   });
   assets.trackMaterial(auraMat);
   const auraRing = new THREE.Mesh(assets.ringGround, auraMat);
@@ -236,28 +368,27 @@ export function buildPlayerAvatar3D(avatarId, assets) {
   auraRing.position.y = 0.6;
   root.add(auraRing);
 
-  // Halo suave radial
-  const glowSpriteMat = new THREE.SpriteMaterial({
+  // Halo suave radial en el suelo (plano horizontal)
+  const glowMat = new THREE.MeshBasicMaterial({
     map: assets.radialGlowTex,
     color: auraColor,
     transparent: true,
     opacity: 0.45,
     blending: THREE.AdditiveBlending,
-    depthWrite: false
+    depthWrite: false,
+    fog: false
   });
-  assets.trackMaterial(glowSpriteMat);
-  const floorGlow = new THREE.Sprite(glowSpriteMat);
-  floorGlow.scale.set(46, 46, 1);
-  floorGlow.position.y = 0.8;
+  assets.trackMaterial(glowMat);
+  const floorGlow = new THREE.Mesh(assets.glowQuadGeo, glowMat);
+  floorGlow.scale.set(46, 1, 46);
+  floorGlow.position.y = 0.7;
   root.add(floorGlow);
 
   // Manto base común del héroe
-  const cloakMat = new THREE.MeshStandardMaterial({
+  const cloakMat = new THREE.MeshLambertMaterial({
     color: '#191316',
     emissive: auraColor,
-    emissiveIntensity: 0.16,
-    roughness: 0.55,
-    metalness: 0.2
+    emissiveIntensity: 0.18
   });
   assets.trackMaterial(cloakMat);
 
@@ -271,11 +402,11 @@ export function buildPlayerAvatar3D(avatarId, assets) {
   head.position.y = 18;
   body.add(head);
 
-  const trimMat = new THREE.MeshStandardMaterial({
+  const trimMat = new THREE.MeshPhongMaterial({
     color: auraColor,
     emissive: auraColor,
     emissiveIntensity: 0.6,
-    roughness: 0.3
+    shininess: 45
   });
   assets.trackMaterial(trimMat);
 
@@ -315,7 +446,8 @@ export function buildPlayerAvatar3D(avatarId, assets) {
         const wing = new THREE.Mesh(assets.desolladoWingGeo, assets.matIvory);
         wing.scale.set(1.1, 1.1, 1.1);
         wing.position.set(side * 12, 18, -3);
-        wing.rotation.set(0.3, side * 0.3, side * -0.4);
+        wing.rotation.order = 'YXZ';
+        wing.rotation.set(side === 1 ? -0.3 : 0.3, side === 1 ? Math.PI : 0, 0.4);
         body.add(wing);
       }
       const blindfold = new THREE.Mesh(assets.cylUnit, assets.matVermilion);
@@ -469,8 +601,7 @@ export function buildPlayerAvatar3D(avatarId, assets) {
         this.walkPhase += dt * 14.0;
         body.rotation.z = Math.sin(this.walkPhase) * 0.11;
         body.position.y = Math.abs(Math.sin(this.walkPhase)) * 2.2;
-        const targetFacing = Math.atan2(vx, -vy);
-        body.rotation.y = targetFacing;
+        body.rotation.y = Math.atan2(vx, -vy);
       } else {
         body.rotation.z *= 0.85;
         body.position.y = Math.sin(elapsed * 3.0) * 1.1;
@@ -481,7 +612,6 @@ export function buildPlayerAvatar3D(avatarId, assets) {
       }
 
       if (aimAngle !== null) {
-        // Logical angle: atan2(dy, dx) -> Three.js Y rotation maps +X forward at 0, +Y logical (-Z Three) at +PI/2
         aimOrbit.rotation.y = aimAngle;
         lantern.visible = true;
       } else if (speed > 14) {
@@ -494,471 +624,658 @@ export function buildPlayerAvatar3D(avatarId, assets) {
   };
 }
 
-// MARK: - Criatura 1: Querubín Desollado (3D)
+// MARK: - Pools Instanciados de Arena 3D (80 enemigos + 400 VFX en ~25 draw calls totales)
 
-export function createDesollado3D(assets) {
-  const root = new THREE.Group();
+export const POOL_CAPS = {
+  DESOLLADO: 96,
+  JAULA: 48,
+  RIBS: 240,
+  MARTIR: 64,
+  MARTIR_ARMS: 128,
+  MEDKIT: 8,
+  MEDKIT_CROSS: 16,
+  PLAYER_PROJ: 160,
+  ENEMY_PROJ: 128,
+  PARTICLES: 320,
+  GHOSTS: 64,
+  RINGS: 112,
+  GLOWS: 256
+};
 
-  const glowMat = new THREE.SpriteMaterial({
-    map: assets.radialGlowTex,
-    color: RELICARIO_PALETTE.vermilion,
-    transparent: true,
-    opacity: 0.42,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false
-  });
-  assets.trackMaterial(glowMat);
-  const glow = new THREE.Sprite(glowMat);
-  glow.scale.set(36, 36, 1);
-  glow.position.y = 1.0;
-  root.add(glow);
+export class InstancedArenaPools {
+  constructor(worldGroup, assets) {
+    this.worldGroup = worldGroup;
+    this.assets = assets;
+    this.allMeshes = [];
 
-  const eyeMesh = new THREE.Mesh(assets.sphereUnit, assets.matIvory);
-  eyeMesh.scale.set(8.2, 7.6, 8.2);
-  eyeMesh.position.y = 12;
-  root.add(eyeMesh);
+    // Colores pre-computados para evitar new THREE.Color en bucle
+    this.colWhite = new THREE.Color('#FFFFFF');
+    this.colVermilion = new THREE.Color(RELICARIO_PALETTE.vermilion);
+    this.colVisceral = new THREE.Color(RELICARIO_PALETTE.visceralCore);
+    this.colGold = new THREE.Color(RELICARIO_PALETTE.liturgicalGold);
+    this.colColdSilver = new THREE.Color(RELICARIO_PALETTE.coldSilver);
+    this.colIvory = new THREE.Color(RELICARIO_PALETTE.ivory);
+    this.colGraceJade = new THREE.Color(RELICARIO_PALETTE.graceJade);
+    this.colOrange = new THREE.Color(RELICARIO_PALETTE.emberOrange);
 
-  const iris = new THREE.Mesh(assets.sphereUnit, assets.matVermilion);
-  iris.scale.set(4.5, 4.5, 2.2);
-  iris.position.set(0, 12, 6.8);
-  root.add(iris);
+    // 1. Halos luminosos en suelo (InstancedMesh único)
+    const glowOpArr = new Float32Array(POOL_CAPS.GLOWS);
+    const glowBundle = createShareableInstancedGeo(assets.glowQuadGeo, 'aOpacity', glowOpArr);
+    assets.trackGeometry(glowBundle.geo);
+    this.glowOpacityAttr = glowBundle.attr;
+    this.glowOpacityArr = glowOpArr;
+    const glowMat = createInstancedOpacityBasicMaterial({
+      map: assets.radialGlowTex,
+      color: '#FFFFFF',
+      transparent: true,
+      opacity: 1,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      fog: false
+    });
+    assets.trackMaterial(glowMat);
+    this.glowsMesh = this.#makeInstanced(glowBundle.geo, glowMat, POOL_CAPS.GLOWS, true);
 
-  const pupil = new THREE.Mesh(assets.octaUnit, assets.matVoid);
-  pupil.scale.set(1.5, 4.2, 1.5);
-  pupil.position.set(0, 12, 8.2);
-  root.add(pupil);
+    // 2. Anillos en el suelo (ondas de choque, frenesí, retícula mártir, pulso botiquín)
+    const ringOpArr = new Float32Array(POOL_CAPS.RINGS);
+    const ringBundle = createShareableInstancedGeo(assets.ringGround, 'aOpacity', ringOpArr);
+    assets.trackGeometry(ringBundle.geo);
+    this.ringOpacityAttr = ringBundle.attr;
+    this.ringOpacityArr = ringOpArr;
+    const ringMat = createInstancedOpacityBasicMaterial({
+      color: '#FFFFFF',
+      transparent: true,
+      opacity: 1,
+      depthWrite: false,
+      fog: false
+    });
+    assets.trackMaterial(ringMat);
+    this.ringsMesh = this.#makeInstanced(ringBundle.geo, ringMat, POOL_CAPS.RINGS, true);
 
-  const leftWing = new THREE.Mesh(assets.desolladoWingGeo, assets.matDarkFlesh);
-  leftWing.position.set(-7.5, 13, -1);
-  leftWing.scale.set(0.95, 0.95, 0.95);
-  root.add(leftWing);
+    // 3. Desollado (5 draw calls para todos los Desollados)
+    const desoFlashArr = new Float32Array(POOL_CAPS.DESOLLADO);
+    const desoEyeBundle = createShareableInstancedGeo(assets.sphereUnit, 'aFlash', desoFlashArr);
+    assets.trackGeometry(desoEyeBundle.geo);
+    this.desoFlashAttr = desoEyeBundle.attr;
+    this.desoFlashArr = desoFlashArr;
+    const desoEyeMat = createFlashableLambertMaterial({
+      color: RELICARIO_PALETTE.ivory,
+      emissive: '#3B342D',
+      emissiveIntensity: 0.25
+    });
+    assets.trackMaterial(desoEyeMat);
+    this.desoEyeMesh = this.#makeInstanced(desoEyeBundle.geo, desoEyeMat, POOL_CAPS.DESOLLADO, false);
+    this.desoIrisMesh = this.#makeInstanced(assets.sphereUnit, assets.matVermilion, POOL_CAPS.DESOLLADO, false);
+    this.desoPupilMesh = this.#makeInstanced(assets.octaUnit, assets.matVoid, POOL_CAPS.DESOLLADO, false);
+    this.desoLeftWingMesh = this.#makeInstanced(assets.desolladoWingGeo, assets.matDarkFlesh, POOL_CAPS.DESOLLADO, false);
+    this.desoRightWingMesh = this.#makeInstanced(assets.desolladoWingGeo, assets.matDarkFlesh, POOL_CAPS.DESOLLADO, false);
 
-  const rightWing = new THREE.Mesh(assets.desolladoWingGeo, assets.matDarkFlesh);
-  rightWing.scale.set(-0.95, 0.95, 0.95);
-  rightWing.position.set(7.5, 13, -1);
-  root.add(rightWing);
+    // 4. Jaula de Vísceras + Costillas desprendidas (5 draw calls totales)
+    const jaulaFlashArr = new Float32Array(POOL_CAPS.JAULA);
+    const jaulaCoreBundle = createShareableInstancedGeo(assets.icosaUnit, 'aFlash', jaulaFlashArr);
+    assets.trackGeometry(jaulaCoreBundle.geo);
+    this.jaulaFlashAttr = jaulaCoreBundle.attr;
+    this.jaulaFlashArr = jaulaFlashArr;
+    const jaulaCoreMat = createFlashableLambertMaterial({
+      color: RELICARIO_PALETTE.visceralCore,
+      emissive: '#8A0219',
+      emissiveIntensity: 0.62
+    });
+    assets.trackMaterial(jaulaCoreMat);
+    this.jaulaCoreMesh = this.#makeInstanced(jaulaCoreBundle.geo, jaulaCoreMat, POOL_CAPS.JAULA, false);
+    this.jaulaScleraMesh = this.#makeInstanced(assets.sphereUnit, assets.matIvory, POOL_CAPS.JAULA, false);
+    this.jaulaIrisMesh = this.#makeInstanced(assets.sphereUnit, assets.matGold, POOL_CAPS.JAULA, false);
+    this.jaulaSlitMesh = this.#makeInstanced(assets.boxUnit, assets.matVoid, POOL_CAPS.JAULA, false);
+    this.jaulaRibsMesh = this.#makeInstanced(assets.jaulaRibGeo, assets.matOldBone, POOL_CAPS.RIBS, false);
 
-  let flashTimer = 0;
-  let isPouncing = false;
+    // 5. Mártir Descoyuntado (7 draw calls totales)
+    const martirTorsoFlashArr = new Float32Array(POOL_CAPS.MARTIR);
+    const martirTorsoBundle = createShareableInstancedGeo(assets.coneUnit, 'aFlash', martirTorsoFlashArr);
+    assets.trackGeometry(martirTorsoBundle.geo);
+    this.martirTorsoFlashAttr = martirTorsoBundle.attr;
+    this.martirTorsoFlashArr = martirTorsoFlashArr;
+    const martirTorsoMat = createFlashableLambertMaterial({ color: RELICARIO_PALETTE.voidBlack });
+    assets.trackMaterial(martirTorsoMat);
+    this.martirTorsoMesh = this.#makeInstanced(martirTorsoBundle.geo, martirTorsoMat, POOL_CAPS.MARTIR, false);
 
-  return {
-    root,
-    setPouncing(active) {
-      if (isPouncing === active) return;
-      isPouncing = active;
-      glowMat.color.set(active ? RELICARIO_PALETTE.liturgicalGold : RELICARIO_PALETTE.vermilion);
-      glowMat.opacity = active ? 0.85 : 0.42;
-      glow.scale.setScalar(active ? 46 : 36);
-    },
-    triggerHitFlash() {
-      flashTimer = 0.08;
-      eyeMesh.material = assets.matFlashWhite;
-    },
-    updateVisual(dt, age, angleToTarget) {
-      root.rotation.y = angleToTarget + Math.PI * 0.5;
-      // Aleteo espasmódico asimétrico
-      leftWing.rotation.z = Math.sin(age * 22.0) * 0.42 + 0.15;
-      rightWing.rotation.z = -Math.sin(age * 18.5 + 0.7) * 0.46 - 0.15;
-      root.position.y = Math.sin(age * 9.0) * 2.0;
+    const martirSpineFlashArr = new Float32Array(POOL_CAPS.MARTIR);
+    const martirSpineBundle = createShareableInstancedGeo(assets.octaUnit, 'aFlash', martirSpineFlashArr);
+    assets.trackGeometry(martirSpineBundle.geo);
+    this.martirSpineFlashAttr = martirSpineBundle.attr;
+    this.martirSpineFlashArr = martirSpineFlashArr;
+    const martirSpineMat = createFlashableLambertMaterial({
+      color: RELICARIO_PALETTE.vermilion,
+      emissive: RELICARIO_PALETTE.vermilion,
+      emissiveIntensity: 0.68
+    });
+    assets.trackMaterial(martirSpineMat);
+    this.martirSpineMesh = this.#makeInstanced(martirSpineBundle.geo, martirSpineMat, POOL_CAPS.MARTIR, false);
 
-      // Tic nervioso de la pupila
-      const twitch = Math.sin(age * 16.0) > 0.86 ? 1.45 : 1.0;
-      pupil.scale.x = 1.5 * twitch;
+    const martirEyeMat = new THREE.MeshBasicMaterial({ color: '#FFFFFF', fog: false });
+    assets.trackMaterial(martirEyeMat);
+    this.martirEyeMesh = this.#makeInstanced(assets.sphereUnit, martirEyeMat, POOL_CAPS.MARTIR, true);
+    this.martirArmsMesh = this.#makeInstanced(assets.coneUnit, assets.matOldBone, POOL_CAPS.MARTIR_ARMS, false);
+    this.martirHalo1Mesh = this.#makeInstanced(assets.martirHaloArc1, assets.matGold, POOL_CAPS.MARTIR, false);
+    this.martirHalo2Mesh = this.#makeInstanced(assets.martirHaloArc2, assets.matGold, POOL_CAPS.MARTIR, false);
 
-      if (flashTimer > 0) {
-        flashTimer -= dt;
-        if (flashTimer <= 0) {
-          eyeMesh.material = assets.matIvory;
-        }
-      }
-    },
-    dispose() {
-      glowMat.dispose();
-    }
-  };
-}
+    const laserMat = new THREE.MeshBasicMaterial({
+      color: RELICARIO_PALETTE.liturgicalGold,
+      transparent: true,
+      opacity: 0.85,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      fog: false
+    });
+    assets.trackMaterial(laserMat);
+    this.martirLaserMesh = this.#makeInstanced(assets.boxUnit, laserMat, POOL_CAPS.MARTIR, false);
 
-// MARK: - Criatura 2: Jaula de Vísceras (3D con 4 Costillas Desprendibles)
+    // 6. Botiquines (2 draw calls totales)
+    this.medkitCrystalMesh = this.#makeInstanced(assets.octaUnit, assets.matGraceJade, POOL_CAPS.MEDKIT, false);
+    this.medkitCrossMesh = this.#makeInstanced(assets.boxUnit, assets.matIvory, POOL_CAPS.MEDKIT_CROSS, false);
 
-export function createJaula3D(assets, spawnDetachedRibFn) {
-  const root = new THREE.Group();
+    // 7. Proyectiles (2 draw calls totales)
+    const pProjMat = new THREE.MeshBasicMaterial({ color: '#FFFFFF', fog: false });
+    assets.trackMaterial(pProjMat);
+    this.playerProjMesh = this.#makeInstanced(assets.playerShardGeo, pProjMat, POOL_CAPS.PLAYER_PROJ, true);
 
-  const glowMat = new THREE.SpriteMaterial({
-    map: assets.radialGlowTex,
-    color: RELICARIO_PALETTE.visceralCore,
-    transparent: true,
-    opacity: 0.52,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false
-  });
-  assets.trackMaterial(glowMat);
-  const glow = new THREE.Sprite(glowMat);
-  glow.scale.set(68, 68, 1);
-  glow.position.y = 1.2;
-  root.add(glow);
+    const eProjMat = new THREE.MeshBasicMaterial({ color: RELICARIO_PALETTE.emberOrange, fog: false });
+    assets.trackMaterial(eProjMat);
+    this.enemyProjMesh = this.#makeInstanced(assets.boneBoltGeo, eProjMat, POOL_CAPS.ENEMY_PROJ, false);
 
-  const frenzyRingMat = new THREE.MeshBasicMaterial({
-    color: RELICARIO_PALETTE.liturgicalGold,
-    transparent: true,
-    opacity: 0,
-    side: THREE.DoubleSide,
-    depthWrite: false
-  });
-  assets.trackMaterial(frenzyRingMat);
-  const frenzyRing = new THREE.Mesh(assets.ringGround, frenzyRingMat);
-  frenzyRing.scale.setScalar(26);
-  frenzyRing.position.y = 1.4;
-  root.add(frenzyRing);
+    // 8. Partículas aditivas (1 draw call, se atenúan por color + escala sin alpha-sorting)
+    const particleMat = new THREE.MeshBasicMaterial({
+      color: '#FFFFFF',
+      transparent: true,
+      opacity: 0.94,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      fog: false
+    });
+    assets.trackMaterial(particleMat);
+    this.particlesMesh = this.#makeInstanced(assets.octaUnit, particleMat, POOL_CAPS.PARTICLES, true);
 
-  const core = new THREE.Mesh(assets.icosaUnit, assets.matVisceral);
-  core.scale.setScalar(13.5);
-  core.position.y = 16;
-  root.add(core);
+    // 9. Estelas fantasma del Mártir (1 draw call)
+    const ghostOpArr = new Float32Array(POOL_CAPS.GHOSTS);
+    const ghostBundle = createShareableInstancedGeo(assets.coneUnit, 'aOpacity', ghostOpArr);
+    assets.trackGeometry(ghostBundle.geo);
+    this.ghostOpacityAttr = ghostBundle.attr;
+    this.ghostOpacityArr = ghostOpArr;
+    const ghostMat = createInstancedOpacityBasicMaterial({
+      color: RELICARIO_PALETTE.vermilion,
+      transparent: true,
+      opacity: 1,
+      depthWrite: false,
+      fog: false
+    });
+    assets.trackMaterial(ghostMat);
+    this.ghostsMesh = this.#makeInstanced(ghostBundle.geo, ghostMat, POOL_CAPS.GHOSTS, true);
 
-  const eyeGroup = new THREE.Group();
-  eyeGroup.position.y = 20;
-  root.add(eyeGroup);
-
-  const sclera = new THREE.Mesh(assets.sphereUnit, assets.matIvory);
-  sclera.scale.set(7.5, 5.5, 6.0);
-  sclera.position.z = 8.5;
-  const iris = new THREE.Mesh(assets.sphereUnit, assets.matGold);
-  iris.scale.setScalar(3.4);
-  iris.position.z = 13.0;
-  const slit = new THREE.Mesh(assets.boxUnit, assets.matVoid);
-  slit.scale.set(1.6, 5.5, 1.5);
-  slit.position.z = 15.6;
-  eyeGroup.add(sclera, iris, slit);
-
-  const armorRing = new THREE.Group();
-  armorRing.position.y = 16;
-  root.add(armorRing);
-
-  const jawRibs = [];
-  for (let i = 0; i < 4; i++) {
-    const rib = new THREE.Mesh(assets.jaulaRibGeo, assets.matOldBone);
-    const angle = i * (Math.PI * 0.5);
-    rib.position.set(Math.cos(angle) * 6, -2, Math.sin(angle) * 6);
-    rib.rotation.x = Math.PI * 0.35;
-    rib.rotation.y = -angle;
-    armorRing.add(rib);
-    jawRibs.push(rib);
+    this.resetFrameCounts();
   }
 
-  let flashTimer = 0;
-  let isFrenzied = false;
-  let spitPulse = 0;
-  let spinSpeed = 1.25;
-
-  return {
-    root,
-    triggerHitFlash() {
-      flashTimer = 0.08;
-      core.material = assets.matFlashWhite;
-    },
-    triggerSpitTelegraph() {
-      spitPulse = 0.42;
-    },
-    updateArmor(hp, maxHP, worldX, worldY) {
-      const ratio = hp / Math.max(1, maxHP);
-      let targetRibs;
-      if (ratio <= 0.30) targetRibs = 0;
-      else if (ratio > 0.78) targetRibs = 4;
-      else if (ratio > 0.62) targetRibs = 3;
-      else if (ratio > 0.45) targetRibs = 2;
-      else targetRibs = 1;
-
-      while (jawRibs.length > targetRibs) {
-        const detached = jawRibs.pop();
-        armorRing.remove(detached);
-        spawnDetachedRibFn(worldX, worldY, armorRing.rotation.y);
+  #makeInstanced(geo, mat, capacity, useColor) {
+    const mesh = new THREE.InstancedMesh(geo, mat, capacity);
+    mesh.frustumCulled = false;
+    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    if (useColor) {
+      for (let i = 0; i < capacity; i++) {
+        mesh.setColorAt(i, this.colWhite);
       }
-
-      const lostCount = 4 - jawRibs.length;
-      spinSpeed = 1.25 * (1.0 + lostCount * 0.48);
-
-      if (jawRibs.length === 0 && !isFrenzied) {
-        isFrenzied = true;
-        glowMat.color.set(RELICARIO_PALETTE.liturgicalGold);
-        glowMat.opacity = 0.78;
-      }
-    },
-    updateVisual(dt, age, angleToTarget) {
-      // Latido visceral continuo
-      const pulse = 13.5 * (1.0 + Math.sin(age * 7.5) * 0.09);
-      core.scale.setScalar(pulse);
-      armorRing.rotation.y += dt * spinSpeed;
-      eyeGroup.rotation.y = angleToTarget + Math.PI * 0.5;
-
-      if (spitPulse > 0) {
-        spitPulse -= dt;
-        glow.scale.setScalar(68 * 1.45);
-        glowMat.opacity = 0.9;
-      } else {
-        glow.scale.setScalar(68);
-        glowMat.opacity = isFrenzied ? 0.78 : 0.52;
-      }
-
-      if (isFrenzied) {
-        const phase = (age * 2.2) % 1.0;
-        frenzyRing.scale.setScalar(20 + phase * 22);
-        frenzyRingMat.opacity = (1.0 - phase) * 0.75;
-      }
-
-      if (flashTimer > 0) {
-        flashTimer -= dt;
-        if (flashTimer <= 0) {
-          core.material = assets.matVisceral;
-        }
-      }
-    },
-    dispose() {
-      glowMat.dispose();
-      frenzyRingMat.dispose();
+      mesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
     }
-  };
-}
+    // Inicializar a count=1 oculto lejos para que renderer.compile() compile el shader instanciado al arrancar
+    _dummy.position.set(0, -9999, 0);
+    _dummy.scale.setScalar(0.001);
+    _dummy.rotation.set(0, 0, 0);
+    _dummy.updateMatrix();
+    mesh.setMatrixAt(0, _dummy.matrix);
+    mesh.count = 1;
+    this.worldGroup.add(mesh);
+    this.allMeshes.push(mesh);
+    return mesh;
+  }
 
-// MARK: - Criatura 3: Mártir Descoyuntado (3D con Halo Fracturado y Láser Telegrafiado)
+  resetFrameCounts() {
+    this.cGlow = 0;
+    this.cRing = 0;
+    this.cDeso = 0;
+    this.cJaula = 0;
+    this.cRib = 0;
+    this.cMartir = 0;
+    this.cMartirArm = 0;
+    this.cMartirLaser = 0;
+    this.cMedkit = 0;
+    this.cMedkitCross = 0;
+    this.cPlayerProj = 0;
+    this.cEnemyProj = 0;
+    this.cParticle = 0;
+    this.cGhost = 0;
+  }
 
-export function createMartir3D(assets) {
-  const root = new THREE.Group();
+  addGlow(x, yHeight, z, size, color, opacity) {
+    const i = this.cGlow;
+    if (i >= POOL_CAPS.GLOWS) return;
+    this.cGlow = i + 1;
+    _pos.set(x, yHeight, z);
+    _quat.identity();
+    _scale.set(size, 1, size);
+    _mat4.compose(_pos, _quat, _scale);
+    this.glowsMesh.setMatrixAt(i, _mat4);
+    this.glowsMesh.setColorAt(i, color);
+    this.glowOpacityArr[i] = opacity;
+  }
 
-  const glowMat = new THREE.SpriteMaterial({
-    map: assets.radialGlowTex,
-    color: RELICARIO_PALETTE.vermilion,
-    transparent: true,
-    opacity: 0.36,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false
-  });
-  assets.trackMaterial(glowMat);
-  const glow = new THREE.Sprite(glowMat);
-  glow.scale.set(46, 46, 1);
-  glow.position.y = 1.1;
-  root.add(glow);
+  addRing(x, yHeight, z, scaleXZ, rotY, color, opacity) {
+    const i = this.cRing;
+    if (i >= POOL_CAPS.RINGS) return;
+    this.cRing = i + 1;
+    _pos.set(x, yHeight, z);
+    _euler.set(0, rotY, 0);
+    _quat.setFromEuler(_euler);
+    _scale.set(scaleXZ, 1, scaleXZ);
+    _mat4.compose(_pos, _quat, _scale);
+    this.ringsMesh.setMatrixAt(i, _mat4);
+    this.ringsMesh.setColorAt(i, color);
+    this.ringOpacityArr[i] = opacity;
+  }
 
-  // Torso retorcido oscuro
-  const torso = new THREE.Mesh(assets.coneUnit, assets.matVoid);
-  torso.scale.set(11, 14, 11);
-  torso.position.y = 14;
-  torso.rotation.x = 0.24;
-  root.add(torso);
+  addDesollado(enemy) {
+    const i = this.cDeso;
+    if (i >= POOL_CAPS.DESOLLADO) return;
+    this.cDeso = i + 1;
 
-  const spineTrim = new THREE.Mesh(assets.octaUnit, assets.matVermilion);
-  spineTrim.scale.set(7.2, 12.5, 4.5);
-  spineTrim.position.y = 14;
-  root.add(spineTrim);
+    const x = enemy.pos.x;
+    const z = -enemy.pos.y;
+    const hoverY = Math.sin(enemy.age * 9.0) * 2.0;
+    const rotY = enemy.facingAngle + Math.PI * 0.5;
+    const sinR = Math.sin(rotY);
+    const cosR = Math.cos(rotY);
+    const flash = enemy.flashTimer > 0 ? 1.0 : 0.0;
+    this.desoFlashArr[i] = flash;
 
-  // Ojo en el pecho
-  const chestEye = new THREE.Mesh(assets.sphereUnit, assets.matVermilion);
-  chestEye.scale.set(2.5, 4.2, 2.5);
-  chestEye.position.set(0, 14.5, 8.0);
-  root.add(chestEye);
-
-  // Brazos guadaña asimétricos
-  const leftArm = new THREE.Mesh(assets.coneUnit, assets.matOldBone);
-  leftArm.scale.set(2.2, 11.5, 2.2);
-  leftArm.position.set(-9.5, 13, 6.5);
-  leftArm.rotation.set(Math.PI * 0.42, 0, 0.45);
-  root.add(leftArm);
-
-  const rightArm = new THREE.Mesh(assets.coneUnit, assets.matOldBone);
-  rightArm.scale.set(2.2, 11.5, 2.2);
-  rightArm.position.set(9.5, 13, 6.5);
-  rightArm.rotation.set(Math.PI * 0.42, 0, -0.58);
-  root.add(rightArm);
-
-  // Halo litúrgico fracturado flotando atrás/arriba
-  const haloGroup = new THREE.Group();
-  haloGroup.position.set(0, 26, -3);
-  const arc1 = new THREE.Mesh(assets.martirHaloArc1, assets.matGold);
-  const arc2 = new THREE.Mesh(assets.martirHaloArc2, assets.matGold);
-  arc2.rotation.z = Math.PI * 0.9;
-  haloGroup.add(arc1, arc2);
-  root.add(haloGroup);
-
-  // Láser de telégrafo en el suelo/pecho + retícula rombo
-  const laserMat = new THREE.MeshBasicMaterial({
-    color: RELICARIO_PALETTE.liturgicalGold,
-    transparent: true,
-    opacity: 0.85,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false
-  });
-  assets.trackMaterial(laserMat);
-  const laserBeam = new THREE.Mesh(assets.boxUnit, laserMat);
-  laserBeam.scale.set(2.8, 1.4, 1);
-  laserBeam.position.set(0, 12, 0);
-  laserBeam.visible = false;
-  root.add(laserBeam);
-
-  const reticleMat = new THREE.MeshBasicMaterial({
-    color: RELICARIO_PALETTE.liturgicalGold,
-    transparent: true,
-    opacity: 0.95,
-    side: THREE.DoubleSide
-  });
-  assets.trackMaterial(reticleMat);
-  const reticle = new THREE.Mesh(assets.ringGround, reticleMat);
-  reticle.scale.setScalar(11);
-  reticle.position.set(0, 2, 0);
-  reticle.visible = false;
-  root.add(reticle);
-
-  let flashTimer = 0;
-
-  return {
-    root,
-    setTelegraph(active, distance) {
-      if (active) {
-        const reticleDist = Math.max(60, distance);
-        const beamLen = Math.max(48, reticleDist - 12);
-        laserBeam.visible = true;
-        laserBeam.scale.set(2.8, 1.8, beamLen);
-        laserBeam.position.set(0, 11, 10 + beamLen * 0.5);
-        reticle.visible = true;
-        reticle.position.set(0, 2.2, reticleDist);
-        chestEye.material = assets.matGold;
-        chestEye.scale.set(4.0, 5.2, 4.0);
-      } else {
-        laserBeam.visible = false;
-        reticle.visible = false;
-        chestEye.material = assets.matVermilion;
-        chestEye.scale.set(2.5, 4.2, 2.5);
-      }
-    },
-    triggerHitFlash() {
-      flashTimer = 0.08;
-      torso.material = assets.matFlashWhite;
-      spineTrim.material = assets.matFlashWhite;
-    },
-    updateVisual(dt, age, facingAngle) {
-      root.rotation.y = facingAngle + Math.PI * 0.5;
-      haloGroup.rotation.z += dt * 1.9;
-      // Tics bruscos de brazos
-      const twitchL = Math.sin(age * 11.0) > 0.85 ? 0.95 : 0.45;
-      const twitchR = Math.cos(age * 14.0) > 0.85 ? -1.05 : -0.58;
-      leftArm.rotation.z = twitchL;
-      rightArm.rotation.z = twitchR;
-
-      if (reticle.visible) {
-        reticle.rotation.y += dt * 4.5;
-      }
-
-      if (flashTimer > 0) {
-        flashTimer -= dt;
-        if (flashTimer <= 0) {
-          torso.material = assets.matVoid;
-          spineTrim.material = assets.matVermilion;
-        }
-      }
-    },
-    dispose() {
-      glowMat.dispose();
-      laserMat.dispose();
-      reticleMat.dispose();
+    // Halo en suelo
+    if (enemy.isPouncing) {
+      this.addGlow(x, 0.9, z, 46, this.colGold, 0.85);
+    } else {
+      this.addGlow(x, 0.9, z, 36, this.colVermilion, 0.42);
     }
-  };
-}
 
-// MARK: - Botiquín 3D (Gota de Gracia)
+    // Cuerpo Ojo
+    _euler.set(0, rotY, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _pos.set(x, 12 + hoverY, z);
+    _scale.set(8.2, 7.6, 8.2);
+    _mat4.compose(_pos, _quat, _scale);
+    this.desoEyeMesh.setMatrixAt(i, _mat4);
 
-export function createMedkit3D(assets) {
-  const root = new THREE.Group();
+    // Iris (+6.8 en Z local)
+    _pos.set(x + 6.8 * sinR, 12 + hoverY, z + 6.8 * cosR);
+    _scale.set(4.5, 4.5, 2.2);
+    _mat4.compose(_pos, _quat, _scale);
+    this.desoIrisMesh.setMatrixAt(i, _mat4);
 
-  const glowMat = new THREE.SpriteMaterial({
-    map: assets.radialGlowTex,
-    color: RELICARIO_PALETTE.graceJade,
-    transparent: true,
-    opacity: 0.62,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false
-  });
-  assets.trackMaterial(glowMat);
-  const glow = new THREE.Sprite(glowMat);
-  glow.scale.set(50, 50, 1);
-  glow.position.y = 1.4;
-  root.add(glow);
+    // Pupila (+8.2 en Z local)
+    const twitch = Math.sin(enemy.age * 16.0) > 0.86 ? 1.45 : 1.0;
+    _pos.set(x + 8.2 * sinR, 12 + hoverY, z + 8.2 * cosR);
+    _scale.set(1.5 * twitch, 4.2, 1.5);
+    _mat4.compose(_pos, _quat, _scale);
+    this.desoPupilMesh.setMatrixAt(i, _mat4);
 
-  const ringMat = new THREE.MeshBasicMaterial({
-    color: RELICARIO_PALETTE.graceJade,
-    transparent: true,
-    opacity: 0.75,
-    side: THREE.DoubleSide,
-    depthWrite: false
-  });
-  assets.trackMaterial(ringMat);
-  const pulseRing = new THREE.Mesh(assets.ringGround, ringMat);
-  pulseRing.position.y = 1.2;
-  root.add(pulseRing);
+    // Ala izquierda (-7.5 X, -1 Z local)
+    const flapL = Math.sin(enemy.age * 22.0) * 0.42 + 0.15;
+    _pos.set(x + (-7.5) * cosR + (-1) * sinR, 13 + hoverY, z - (-7.5) * sinR + (-1) * cosR);
+    _euler.set(0, rotY, flapL, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.set(0.95, 0.95, 0.95);
+    _mat4.compose(_pos, _quat, _scale);
+    this.desoLeftWingMesh.setMatrixAt(i, _mat4);
 
-  const crystal = new THREE.Mesh(assets.octaUnit, assets.matGraceJade);
-  crystal.scale.set(9.5, 13.5, 9.5);
-  crystal.position.y = 15;
-  root.add(crystal);
+    // Ala derecha (+7.5 X, -1 Z local, rotada Y + PI con escala positiva -> sin normales invertidas)
+    const flapR = -Math.sin(enemy.age * 18.5 + 0.7) * 0.46 - 0.15;
+    _pos.set(x + 7.5 * cosR + (-1) * sinR, 13 + hoverY, z - 7.5 * sinR + (-1) * cosR);
+    _euler.set(0, rotY + Math.PI, -flapR, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.set(0.95, 0.95, 0.95);
+    _mat4.compose(_pos, _quat, _scale);
+    this.desoRightWingMesh.setMatrixAt(i, _mat4);
+  }
 
-  const crossH = new THREE.Mesh(assets.boxUnit, assets.matIvory);
-  crossH.scale.set(11, 2.8, 11);
-  crossH.position.y = 15;
-  const crossV = new THREE.Mesh(assets.boxUnit, assets.matIvory);
-  crossV.scale.set(2.8, 11, 11);
-  crossV.position.y = 15;
-  root.add(crossH, crossV);
+  addJaula(enemy) {
+    const i = this.cJaula;
+    if (i >= POOL_CAPS.JAULA) return;
+    this.cJaula = i + 1;
 
-  return {
-    root,
-    updateVisual(age) {
-      crystal.rotation.y = age * 2.2;
-      crystal.position.y = 15 + Math.sin(age * 4.5) * 2.5;
-      crossH.position.y = crystal.position.y;
-      crossV.position.y = crystal.position.y;
-      crossH.rotation.y = crystal.rotation.y;
-      crossV.rotation.y = crystal.rotation.y;
+    const x = enemy.pos.x;
+    const z = -enemy.pos.y;
+    const flash = enemy.flashTimer > 0 ? 1.0 : 0.0;
+    this.jaulaFlashArr[i] = flash;
 
-      const ringPhase = (age * 1.4) % 1.0;
-      pulseRing.scale.setScalar(13 + ringPhase * 11);
-      ringMat.opacity = (1.0 - ringPhase) * 0.72;
-    },
-    dispose() {
-      glowMat.dispose();
-      ringMat.dispose();
+    // Halo
+    let glowSize = 68;
+    let glowOpacity = enemy.isFrenzied ? 0.78 : 0.52;
+    if (enemy.spitPulse > 0) {
+      glowSize = 68 * 1.45;
+      glowOpacity = 0.9;
     }
-  };
-}
+    this.addGlow(x, 1.1, z, glowSize, enemy.isFrenzied ? this.colGold : this.colVisceral, glowOpacity);
 
-// MARK: - Popups flotantes 3D ("+28 HP", "¡NIVEL X! +PODER")
-
-export function createFloatingTextSprite3D(text, colorHex) {
-  const canvas = document.createElement('canvas');
-  canvas.width = 256;
-  canvas.height = 56;
-  const ctx = canvas.getContext('2d');
-  ctx.font = 'bold 26px "JetBrains Mono", Menlo, monospace';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.shadowColor = 'rgba(0,0,0,0.95)';
-  ctx.shadowBlur = 6;
-  ctx.fillStyle = colorHex;
-  ctx.fillText(text, 128, 28);
-
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.minFilter = THREE.LinearFilter;
-  const mat = new THREE.SpriteMaterial({
-    map: tex,
-    transparent: true,
-    depthTest: false,
-    depthWrite: false
-  });
-  const sprite = new THREE.Sprite(mat);
-  sprite.scale.set(92, 20, 1);
-  sprite.renderOrder = 25;
-
-  return {
-    sprite,
-    dispose() {
-      tex.dispose();
-      mat.dispose();
+    // Anillo de frenesí
+    if (enemy.isFrenzied) {
+      const phase = (enemy.age * 2.2) % 1.0;
+      this.addRing(x, 1.4, z, 20 + phase * 22, 0, this.colGold, (1.0 - phase) * 0.75);
     }
-  };
+
+    // Núcleo visceral palpitante
+    const pulse = 13.5 * (1.0 + Math.sin(enemy.age * 7.5) * 0.09);
+    _pos.set(x, 16, z);
+    _quat.identity();
+    _scale.set(pulse, pulse, pulse);
+    _mat4.compose(_pos, _quat, _scale);
+    this.jaulaCoreMesh.setMatrixAt(i, _mat4);
+
+    // Ojo mirando al jugador
+    const eyeRotY = enemy.facingAngle + Math.PI * 0.5;
+    const sinE = Math.sin(eyeRotY);
+    const cosE = Math.cos(eyeRotY);
+    _euler.set(0, eyeRotY, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+
+    _pos.set(x + 8.5 * sinE, 20, z + 8.5 * cosE);
+    _scale.set(7.5, 5.5, 6.0);
+    _mat4.compose(_pos, _quat, _scale);
+    this.jaulaScleraMesh.setMatrixAt(i, _mat4);
+
+    _pos.set(x + 13.0 * sinE, 20, z + 13.0 * cosE);
+    _scale.set(3.4, 3.4, 3.4);
+    _mat4.compose(_pos, _quat, _scale);
+    this.jaulaIrisMesh.setMatrixAt(i, _mat4);
+
+    _pos.set(x + 15.6 * sinE, 20, z + 15.6 * cosE);
+    _scale.set(1.6, 5.5, 1.5);
+    _mat4.compose(_pos, _quat, _scale);
+    this.jaulaSlitMesh.setMatrixAt(i, _mat4);
+
+    // Costillas mandibulares giratorias (0 a 4)
+    const ribBaseAngle = enemy.ribSpinAngle;
+    const ribSlotOffsets = [0, Math.PI * 0.5, Math.PI, Math.PI * 1.5];
+    for (let r = 0; r < enemy.attachedRibs; r++) {
+      const ri = this.cRib;
+      if (ri >= POOL_CAPS.RIBS) break;
+      this.cRib = ri + 1;
+
+      const localA = ribSlotOffsets[r];
+      const worldA = localA + ribBaseAngle;
+      const lx = Math.cos(localA) * 6;
+      const lz = Math.sin(localA) * 6;
+      const cosB = Math.cos(ribBaseAngle);
+      const sinB = Math.sin(ribBaseAngle);
+      _pos.set(x + lx * cosB + lz * sinB, 14, z - lx * sinB + lz * cosB);
+      _euler.set(Math.PI * 0.35, -localA + ribBaseAngle, 0, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.set(1, 1, 1);
+      _mat4.compose(_pos, _quat, _scale);
+      this.jaulaRibsMesh.setMatrixAt(ri, _mat4);
+    }
+  }
+
+  addDetachedRib(rib) {
+    const ri = this.cRib;
+    if (ri >= POOL_CAPS.RIBS) return;
+    this.cRib = ri + 1;
+
+    _pos.set(rib.x, rib.y, rib.z);
+    _euler.set(rib.rotX, rib.rotY, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.setScalar(rib.scale);
+    _mat4.compose(_pos, _quat, _scale);
+    this.jaulaRibsMesh.setMatrixAt(ri, _mat4);
+  }
+
+  addMartir(enemy) {
+    const i = this.cMartir;
+    if (i >= POOL_CAPS.MARTIR) return;
+    this.cMartir = i + 1;
+
+    const x = enemy.pos.x;
+    const z = -enemy.pos.y;
+    const rotY = enemy.facingAngle + Math.PI * 0.5;
+    const sinR = Math.sin(rotY);
+    const cosR = Math.cos(rotY);
+    const flash = enemy.flashTimer > 0 ? 1.0 : 0.0;
+    this.martirTorsoFlashArr[i] = flash;
+    this.martirSpineFlashArr[i] = flash;
+
+    // Halo en el suelo
+    this.addGlow(x, 1.0, z, 46, this.colVermilion, 0.36);
+
+    // Torso retorcido
+    _pos.set(x, 14, z);
+    _euler.set(0.24, rotY, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.set(11, 14, 11);
+    _mat4.compose(_pos, _quat, _scale);
+    this.martirTorsoMesh.setMatrixAt(i, _mat4);
+
+    // Espina frontal
+    _euler.set(0, rotY, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _pos.set(x, 14, z);
+    _scale.set(7.2, 12.5, 4.5);
+    _mat4.compose(_pos, _quat, _scale);
+    this.martirSpineMesh.setMatrixAt(i, _mat4);
+
+    // Ojo en el pecho (+8.0 Z local)
+    _pos.set(x + 8.0 * sinR, 14.5, z + 8.0 * cosR);
+    if (enemy.telegraphActive) {
+      _scale.set(4.0, 5.2, 4.0);
+      this.martirEyeMesh.setColorAt(i, this.colGold);
+    } else {
+      _scale.set(2.5, 4.2, 2.5);
+      this.martirEyeMesh.setColorAt(i, this.colVermilion);
+    }
+    _mat4.compose(_pos, _quat, _scale);
+    this.martirEyeMesh.setMatrixAt(i, _mat4);
+
+    // Brazos guadaña asimétricos
+    const twitchL = Math.sin(enemy.age * 11.0) > 0.85 ? 0.95 : 0.45;
+    const twitchR = Math.cos(enemy.age * 14.0) > 0.85 ? -1.05 : -0.58;
+    const lx = -9.5, lz = 6.5;
+    if (this.cMartirArm + 2 <= POOL_CAPS.MARTIR_ARMS) {
+      const a1 = this.cMartirArm++;
+      _pos.set(x + lx * cosR + lz * sinR, 13, z - lx * sinR + lz * cosR);
+      _euler.set(Math.PI * 0.42, rotY, twitchL, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.set(2.2, 11.5, 2.2);
+      _mat4.compose(_pos, _quat, _scale);
+      this.martirArmsMesh.setMatrixAt(a1, _mat4);
+
+      const rx = 9.5;
+      const a2 = this.cMartirArm++;
+      _pos.set(x + rx * cosR + lz * sinR, 13, z - rx * sinR + lz * cosR);
+      _euler.set(Math.PI * 0.42, rotY, twitchR, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _mat4.compose(_pos, _quat, _scale);
+      this.martirArmsMesh.setMatrixAt(a2, _mat4);
+    }
+
+    // Halo fracturado flotante (-3 Z local)
+    _pos.set(x + (-3) * sinR, 26, z + (-3) * cosR);
+    _euler.set(0, rotY, enemy.haloSpin, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.set(1, 1, 1);
+    _mat4.compose(_pos, _quat, _scale);
+    this.martirHalo1Mesh.setMatrixAt(i, _mat4);
+
+    _euler.set(0, rotY, enemy.haloSpin + Math.PI * 0.9, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _mat4.compose(_pos, _quat, _scale);
+    this.martirHalo2Mesh.setMatrixAt(i, _mat4);
+
+    // Láser y retícula de telégrafo
+    if (enemy.telegraphActive) {
+      const reticleDist = Math.max(60, enemy.telegraphDist);
+      const beamLen = Math.max(48, reticleDist - 12);
+      const beamCenterZ = 10 + beamLen * 0.5;
+      if (this.cMartirLaser < POOL_CAPS.MARTIR) {
+        const li = this.cMartirLaser++;
+        _pos.set(x + beamCenterZ * sinR, 11, z + beamCenterZ * cosR);
+        _euler.set(0, rotY, 0, 'YXZ');
+        _quat.setFromEuler(_euler);
+        _scale.set(2.8, 1.8, beamLen);
+        _mat4.compose(_pos, _quat, _scale);
+        this.martirLaserMesh.setMatrixAt(li, _mat4);
+      }
+      this.addRing(
+        x + reticleDist * sinR,
+        2.2,
+        z + reticleDist * cosR,
+        11,
+        enemy.age * 4.5,
+        this.colGold,
+        0.95
+      );
+    }
+  }
+
+  addMedkit(kit) {
+    const i = this.cMedkit;
+    if (i >= POOL_CAPS.MEDKIT) return;
+    this.cMedkit = i + 1;
+
+    const x = kit.pos.x;
+    const z = -kit.pos.y;
+    const bobY = 15 + Math.sin(kit.age * 4.5) * 2.5;
+    const rotY = kit.age * 2.2;
+
+    this.addGlow(x, 1.3, z, 50, this.colGraceJade, 0.62);
+    const ringPhase = (kit.age * 1.4) % 1.0;
+    this.addRing(x, 1.2, z, 13 + ringPhase * 11, 0, this.colGraceJade, (1.0 - ringPhase) * 0.72);
+
+    _pos.set(x, bobY, z);
+    _euler.set(0, rotY, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.set(9.5, 13.5, 9.5);
+    _mat4.compose(_pos, _quat, _scale);
+    this.medkitCrystalMesh.setMatrixAt(i, _mat4);
+
+    if (this.cMedkitCross + 2 <= POOL_CAPS.MEDKIT_CROSS) {
+      const c1 = this.cMedkitCross++;
+      _scale.set(11, 2.8, 11);
+      _mat4.compose(_pos, _quat, _scale);
+      this.medkitCrossMesh.setMatrixAt(c1, _mat4);
+
+      const c2 = this.cMedkitCross++;
+      _scale.set(2.8, 11, 11);
+      _mat4.compose(_pos, _quat, _scale);
+      this.medkitCrossMesh.setMatrixAt(c2, _mat4);
+    }
+  }
+
+  addPlayerProjectile(x, y, angle, scale, color) {
+    const i = this.cPlayerProj;
+    if (i >= POOL_CAPS.PLAYER_PROJ) return;
+    this.cPlayerProj = i + 1;
+
+    _pos.set(x, 14, -y);
+    _euler.set(0, angle, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.setScalar(scale);
+    _mat4.compose(_pos, _quat, _scale);
+    this.playerProjMesh.setMatrixAt(i, _mat4);
+    this.playerProjMesh.setColorAt(i, color);
+  }
+
+  addEnemyProjectile(x, y, angle) {
+    const i = this.cEnemyProj;
+    if (i >= POOL_CAPS.ENEMY_PROJ) return;
+    this.cEnemyProj = i + 1;
+
+    _pos.set(x, 14, -y);
+    _euler.set(0, angle, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.setScalar(5.0);
+    _mat4.compose(_pos, _quat, _scale);
+    this.enemyProjMesh.setMatrixAt(i, _mat4);
+  }
+
+  addParticle(x, yHeight, z, size, r, g, b) {
+    const i = this.cParticle;
+    if (i >= POOL_CAPS.PARTICLES) return;
+    this.cParticle = i + 1;
+
+    _pos.set(x, yHeight, z);
+    _quat.identity();
+    _scale.setScalar(size);
+    _mat4.compose(_pos, _quat, _scale);
+    this.particlesMesh.setMatrixAt(i, _mat4);
+    _color.setRGB(r, g, b);
+    this.particlesMesh.setColorAt(i, _color);
+  }
+
+  addGhost(x, z, facingAngle, scaleScalar, opacity) {
+    const i = this.cGhost;
+    if (i >= POOL_CAPS.GHOSTS) return;
+    this.cGhost = i + 1;
+
+    _pos.set(x, 13, z);
+    _euler.set(0, facingAngle + Math.PI * 0.5, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.set(10 * scaleScalar, 14 * scaleScalar, 10 * scaleScalar);
+    _mat4.compose(_pos, _quat, _scale);
+    this.ghostsMesh.setMatrixAt(i, _mat4);
+    this.ghostOpacityArr[i] = opacity;
+  }
+
+  commit() {
+    this.#commitMesh(this.glowsMesh, this.cGlow, true, this.glowOpacityAttr);
+    this.#commitMesh(this.ringsMesh, this.cRing, true, this.ringOpacityAttr);
+
+    this.#commitMesh(this.desoEyeMesh, this.cDeso, false, this.desoFlashAttr);
+    this.#commitMesh(this.desoIrisMesh, this.cDeso, false, null);
+    this.#commitMesh(this.desoPupilMesh, this.cDeso, false, null);
+    this.#commitMesh(this.desoLeftWingMesh, this.cDeso, false, null);
+    this.#commitMesh(this.desoRightWingMesh, this.cDeso, false, null);
+
+    this.#commitMesh(this.jaulaCoreMesh, this.cJaula, false, this.jaulaFlashAttr);
+    this.#commitMesh(this.jaulaScleraMesh, this.cJaula, false, null);
+    this.#commitMesh(this.jaulaIrisMesh, this.cJaula, false, null);
+    this.#commitMesh(this.jaulaSlitMesh, this.cJaula, false, null);
+    this.#commitMesh(this.jaulaRibsMesh, this.cRib, false, null);
+
+    this.#commitMesh(this.martirTorsoMesh, this.cMartir, false, this.martirTorsoFlashAttr);
+    this.#commitMesh(this.martirSpineMesh, this.cMartir, false, this.martirSpineFlashAttr);
+    this.#commitMesh(this.martirEyeMesh, this.cMartir, true, null);
+    this.#commitMesh(this.martirArmsMesh, this.cMartirArm, false, null);
+    this.#commitMesh(this.martirHalo1Mesh, this.cMartir, false, null);
+    this.#commitMesh(this.martirHalo2Mesh, this.cMartir, false, null);
+    this.#commitMesh(this.martirLaserMesh, this.cMartirLaser, false, null);
+
+    this.#commitMesh(this.medkitCrystalMesh, this.cMedkit, false, null);
+    this.#commitMesh(this.medkitCrossMesh, this.cMedkitCross, false, null);
+
+    this.#commitMesh(this.playerProjMesh, this.cPlayerProj, true, null);
+    this.#commitMesh(this.enemyProjMesh, this.cEnemyProj, false, null);
+    this.#commitMesh(this.particlesMesh, this.cParticle, true, null);
+    this.#commitMesh(this.ghostsMesh, this.cGhost, true, this.ghostOpacityAttr);
+  }
+
+  #commitMesh(mesh, count, hasColor, extraAttr) {
+    mesh.count = count;
+    if (count > 0) {
+      mesh.instanceMatrix.needsUpdate = true;
+      if (hasColor && mesh.instanceColor) {
+        mesh.instanceColor.needsUpdate = true;
+      }
+      if (extraAttr) {
+        extraAttr.needsUpdate = true;
+      }
+    }
+  }
+
+  dispose() {
+    for (let i = 0; i < this.allMeshes.length; i++) {
+      this.allMeshes[i].dispose();
+    }
+    this.allMeshes.length = 0;
+  }
 }

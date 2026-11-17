@@ -137,6 +137,21 @@ export function mountGameView(root, { initials, modeId, avatarId, audio, onFinis
     arena?.setUserPaused(isPaused);
   };
 
+  let joyWasActive = false;
+  let lastLevel = -1;
+  let lastHp = -1;
+  let lastHpBg = '';
+  let lastHpColor = '';
+  let lastTimeStr = '';
+  let lastTimeColor = '';
+  let lastKills = -1;
+  let lastStressPct = -1;
+  let lastStressLabel = '';
+  let lastStressColor = '';
+  let lastDirMsg = '';
+  let lastBorderColor = '';
+  let lastDanger = false;
+
   arena = new PanicArena3D({
     container: elStage,
     modeId,
@@ -145,12 +160,18 @@ export function mountGameView(root, { initials, modeId, avatarId, audio, onFinis
     audio,
     onJoystickChange: (joy) => {
       if (!joy.active) {
-        elJoyRing.style.opacity = '0';
-        elJoyKnob.style.opacity = '0';
+        if (joyWasActive) {
+          joyWasActive = false;
+          elJoyRing.style.opacity = '0';
+          elJoyKnob.style.opacity = '0';
+        }
         return;
       }
-      elJoyRing.style.opacity = '0.88';
-      elJoyKnob.style.opacity = '0.94';
+      if (!joyWasActive) {
+        joyWasActive = true;
+        elJoyRing.style.opacity = '0.88';
+        elJoyKnob.style.opacity = '0.94';
+      }
       elJoyRing.style.transform = `translate3d(${joy.originX - 46}px, ${joy.originY - 46}px, 0)`;
       elJoyKnob.style.transform = `translate3d(${joy.knobX - 18}px, ${joy.knobY - 18}px, 0)`;
     },
@@ -158,38 +179,82 @@ export function mountGameView(root, { initials, modeId, avatarId, audio, onFinis
       setPaused(!isPaused);
     },
     onSnapshotUpdate: (snap) => {
-      elLevel.textContent = `NV.${snap.playerLevel}`;
-      const hpRatio = Math.max(0, Math.min(1, snap.hp / Math.max(1, snap.maxHP)));
-      const lowHP = snap.hp <= 30;
-      elHpFill.style.width = `${(hpRatio * 100).toFixed(1)}%`;
-      elHpFill.style.background = lowHP ? RELICARIO_PALETTE.vermilion : RELICARIO_PALETTE.graceJade;
-      elHpText.textContent = `${snap.hp}`;
-      elHpText.style.color = lowHP ? RELICARIO_PALETTE.vermilion : RELICARIO_PALETTE.ivory;
+      if (snap.playerLevel !== lastLevel) {
+        lastLevel = snap.playerLevel;
+        elLevel.textContent = `NV.${snap.playerLevel}`;
+      }
 
-      elTimer.textContent = formatCountdown(snap.timeRemaining);
-      elTimer.style.color = snap.timeRemaining <= 10 ? RELICARIO_PALETTE.vermilion : RELICARIO_PALETTE.ivory;
-      elKills.textContent = `${snap.kills}`;
+      const lowHP = snap.hp <= 30;
+      if (snap.hp !== lastHp) {
+        lastHp = snap.hp;
+        const hpRatio = Math.max(0, Math.min(1, snap.hp / Math.max(1, snap.maxHP)));
+        elHpFill.style.width = `${(hpRatio * 100).toFixed(1)}%`;
+        elHpText.textContent = `${snap.hp}`;
+      }
+      const nextHpBg = lowHP ? RELICARIO_PALETTE.vermilion : RELICARIO_PALETTE.graceJade;
+      if (nextHpBg !== lastHpBg) {
+        lastHpBg = nextHpBg;
+        elHpFill.style.background = nextHpBg;
+      }
+      const nextHpColor = lowHP ? RELICARIO_PALETTE.vermilion : RELICARIO_PALETTE.ivory;
+      if (nextHpColor !== lastHpColor) {
+        lastHpColor = nextHpColor;
+        elHpText.style.color = nextHpColor;
+      }
+
+      const nextTimeStr = formatCountdown(snap.timeRemaining);
+      if (nextTimeStr !== lastTimeStr) {
+        lastTimeStr = nextTimeStr;
+        elTimer.textContent = nextTimeStr;
+      }
+      const nextTimeColor = snap.timeRemaining <= 10 ? RELICARIO_PALETTE.vermilion : RELICARIO_PALETTE.ivory;
+      if (nextTimeColor !== lastTimeColor) {
+        lastTimeColor = nextTimeColor;
+        elTimer.style.color = nextTimeColor;
+      }
+
+      if (snap.kills !== lastKills) {
+        lastKills = snap.kills;
+        elKills.textContent = `${snap.kills}`;
+      }
 
       const stressPct = Math.round(snap.stressIndex);
       const tier = snap.stressTier;
-      elStressTier.textContent = tier.label;
-      elStressTier.style.color = tier.color;
-      elStressTier.style.background = `${tier.color}30`;
-      elStressPct.textContent = `${stressPct} %`;
-      elStressPct.style.color = tier.color;
-      elStressFill.style.width = `${Math.max(4, Math.min(100, snap.stressIndex))}%`;
-      elStressFill.style.background = tier.color;
+      if (tier.label !== lastStressLabel) {
+        lastStressLabel = tier.label;
+        elStressTier.textContent = tier.label;
+      }
+      if (tier.color !== lastStressColor) {
+        lastStressColor = tier.color;
+        elStressTier.style.color = tier.color;
+        elStressTier.style.background = `${tier.color}30`;
+        elStressPct.style.color = tier.color;
+        elStressFill.style.background = tier.color;
+        elDirDot.style.background = modeId === 'classic1985' ? `${RELICARIO_PALETTE.oldBone}99` : tier.color;
+      }
+      if (stressPct !== lastStressPct) {
+        lastStressPct = stressPct;
+        elStressPct.textContent = `${stressPct} %`;
+        elStressFill.style.width = `${Math.max(4, Math.min(100, snap.stressIndex))}%`;
+      }
 
-      elDirDot.style.background = modeId === 'classic1985' ? `${RELICARIO_PALETTE.oldBone}99` : tier.color;
-      elDirMsg.textContent = snap.directorMessage;
-      elStressPanel.style.borderColor = snap.isInterventionActive
+      if (snap.directorMessage !== lastDirMsg) {
+        lastDirMsg = snap.directorMessage;
+        elDirMsg.textContent = snap.directorMessage;
+      }
+
+      const nextBorderColor = snap.isInterventionActive
         ? `${tier.color}99`
         : 'rgba(255,255,255,0.14)';
+      if (nextBorderColor !== lastBorderColor) {
+        lastBorderColor = nextBorderColor;
+        elStressPanel.style.borderColor = nextBorderColor;
+      }
 
-      if (snap.stressIndex >= 72 || lowHP) {
-        elVignette.classList.add('is-danger');
-      } else {
-        elVignette.classList.remove('is-danger');
+      const nextDanger = snap.stressIndex >= 72 || lowHP;
+      if (nextDanger !== lastDanger) {
+        lastDanger = nextDanger;
+        elVignette.classList.toggle('is-danger', nextDanger);
       }
     },
     onRunCompleted: (record) => {
