@@ -31,6 +31,12 @@ export function mountStartView(root, state, actions) {
         </div>
         <h1 id="main-title" class="hero-title">PANIC DIRECTOR</h1>
         <p class="hero-subtitle">Relicario de Ceniza y Carmesí</p>
+        ${state.roomCode ? `
+          <div class="start-live-room-bar">
+            <span class="pulse-dot"></span>
+            <span>SALA EN TIEMPO REAL: <strong>${escapeHtml(state.roomCode)}</strong></span>
+          </div>
+        ` : ''}
       </header>
 
       <section class="panel" aria-label="Iniciales del jugador">
@@ -159,6 +165,15 @@ export function mountStartView(root, state, actions) {
             <span>★ Jugadores (${state.uniquePlayerCount})</span>
           </button>
         </nav>
+
+        <button type="button" id="btn-open-dashboard" class="btn-projector-banner">
+          <span class="projector-icon">📺</span>
+          <span class="projector-copy">
+            <strong>DASHBOARD EN VIVO DE CLASE (QR + RÁNKING)</strong>
+            <small>Pantalla panorámica para proyectar en clase en tiempo real</small>
+          </span>
+          <span class="chevron-right">›</span>
+        </button>
       </div>
     </main>
   `;
@@ -212,4 +227,5 @@ export function mountStartView(root, state, actions) {
   root.querySelector('#btn-start-game').addEventListener('click', () => actions.onStartGame());
   root.querySelector('#btn-open-telemetry').addEventListener('click', () => actions.onOpenTelemetry());
   root.querySelector('#btn-open-players').addEventListener('click', () => actions.onOpenPlayers());
+  root.querySelector('#btn-open-dashboard')?.addEventListener('click', () => actions.onOpenDashboard?.());
 }

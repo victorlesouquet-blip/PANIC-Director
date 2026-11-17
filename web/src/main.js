@@ -1,13 +1,15 @@
-// Punto de entrada principal: enrutador de pantallas (Inicio -> Arena 3D -> Resultados -> Jugadores/Perfil)
+// Punto de entrada principal: enrutador de pantallas (Inicio -> Arena 3D -> Resultados -> Jugadores/Perfil -> Dashboard en Vivo)
 
 import './styles/main.css';
 import { PLAYER_AVATAR_MAP, GAME_MODE_MAP } from './engine/constants.js';
 import { TelemetryStore, normalizeInitials } from './engine/telemetryStore.js';
+import { LiveClassroomSync } from './engine/liveSync.js';
 import { WebAudioHaptics } from './engine/audioHaptics.js';
 import { mountStartView } from './ui/StartView.js';
 import { mountGameView } from './ui/GameView.js';
 import { mountResultsView } from './ui/ResultsView.js';
 import { mountPlayersView } from './ui/PlayersView.js';
+import { mountDashboardView } from './ui/DashboardView.js';
 
 const PREFS_KEY = 'panic_director_web_prefs_v1';
 
@@ -36,12 +38,29 @@ function savePrefs(state) {
   }
 }
 
+function detectInitialScreen() {
+  if (typeof window !== 'undefined' && window.location) {
+    const params = new URLSearchParams(window.location.search);
+    if (
+      params.get('dashboard') === '1' ||
+      params.get('dashboard') === 'true' ||
+      params.get('proyector') === '1' ||
+      window.location.hash === '#dashboard'
+    ) {
+      return 'dashboard';
+    }
+  }
+  return 'start';
+}
+
 const savedPrefs = loadPrefs();
 const store = new TelemetryStore();
+const liveSync = new LiveClassroomSync(store);
+liveSync.start();
 const audio = new WebAudioHaptics();
 
 const appState = {
-  screen: 'start',
+  screen: detectInitialScreen(),
   initialsChars:
     Array.isArray(savedPrefs?.initialsChars) && savedPrefs.initialsChars.length === 3
       ? savedPrefs.initialsChars
@@ -61,16 +80,44 @@ const appState = {
 const rootEl = document.getElementById('app');
 let activeCleanup = null;
 
+function syncUrlWithScreen(screen) {
+  if (typeof window === 'undefined' || !window.history?.replaceState) return;
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.set('room', liveSync.roomCode);
+    if (screen === 'dashboard') {
+      url.searchParams.set('dashboard', '1');
+    } else {
+      url.searchParams.delete('dashboard');
+      url.searchParams.delete('proyector');
+    }
+    window.history.replaceState({}, '', url.toString());
+  } catch {
+    // Ignorar
+  }
+}
+
 function navigate(nextScreen) {
   if (typeof activeCleanup === 'function') {
     activeCleanup();
     activeCleanup = null;
   }
   appState.screen = nextScreen;
+  syncUrlWithScreen(nextScreen);
   renderApp();
   if (nextScreen !== 'game') {
     window.scrollTo({ top: 0, behavior: 'instant' });
   }
+}
+
+function startRunWithLivePresence() {
+  const initials = normalizeInitials(appState.initialsChars.join(''));
+  liveSync.publishRunStart({
+    initials,
+    avatar: appState.selectedAvatar,
+    mode: appState.selectedMode
+  });
+  navigate('game');
 }
 
 function renderApp() {
@@ -89,6 +136,7 @@ function renderApp() {
       onFinishRun: (record) => {
         const saved = store.recordRun(record);
         appState.lastRecord = saved;
+        liveSync.publishRunFinish(saved);
         navigate('results');
       }
     });
@@ -97,13 +145,30 @@ function renderApp() {
 
   document.body.classList.remove('in-game');
 
+  if (appState.screen === 'dashboard') {
+    activeCleanup = mountDashboardView(rootEl, {
+      store,
+      liveSync,
+      audio,
+      onReturnToStart: () => {
+        navigate('start');
+      },
+      onOpenPlayerProfile: (initialsTarget) => {
+        appState.playersInitialTarget = initialsTarget;
+        navigate('players');
+      }
+    });
+    return;
+  }
+
   if (appState.screen === 'results') {
     mountResultsView(rootEl, {
       lastRecord: appState.lastRecord,
       store,
+      roomCode: liveSync.roomCode,
       onPlayAgain: () => {
         audio.unlock();
-        navigate('game');
+        startRunWithLivePresence();
       },
       onReturnToStart: () => {
         navigate('start');
@@ -111,6 +176,9 @@ function renderApp() {
       onOpenPlayers: (initialsTarget) => {
         appState.playersInitialTarget = initialsTarget;
         navigate('players');
+      },
+      onOpenDashboard: () => {
+        navigate('dashboard');
       }
     });
     return;
@@ -146,7 +214,8 @@ function renderApp() {
       selectedMode: appState.selectedMode,
       selectedAvatar: appState.selectedAvatar,
       recordedCount: store.records.length,
-      uniquePlayerCount: store.uniquePlayerCount
+      uniquePlayerCount: store.uniquePlayerCount,
+      roomCode: liveSync.roomCode
     },
     {
       onUpdateInitials: (nextChars, opts = {}) => {
@@ -172,7 +241,7 @@ function renderApp() {
         audio.unlock();
         savePrefs(appState);
         appState.lastRecord = null;
-        navigate('game');
+        startRunWithLivePresence();
       },
       onOpenTelemetry: () => {
         appState.lastRecord = null;
@@ -181,9 +250,22 @@ function renderApp() {
       onOpenPlayers: () => {
         appState.playersInitialTarget = null;
         navigate('players');
+      },
+      onOpenDashboard: () => {
+        navigate('dashboard');
       }
     }
   );
 }
+
+// Actualizar contadores si llegan partidas en tiempo real mientras estamos en la pantalla de inicio
+liveSync.subscribe(() => {
+  if (appState.screen === 'start') {
+    const tBtn = rootEl.querySelector('#btn-open-telemetry span');
+    const pBtn = rootEl.querySelector('#btn-open-players span');
+    if (tBtn) tBtn.textContent = `▮ Telemetría (${store.records.length})`;
+    if (pBtn) pBtn.textContent = `★ Jugadores (${store.uniquePlayerCount})`;
+  }
+});
 
 renderApp();

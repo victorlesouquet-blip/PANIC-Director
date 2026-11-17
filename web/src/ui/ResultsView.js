@@ -16,7 +16,7 @@ function formatStatNum(stats, val) {
   return stats.runCount > 0 ? `${val.toFixed(1)}` : '—';
 }
 
-export function mountResultsView(root, { lastRecord, store, onPlayAgain, onReturnToStart, onOpenPlayers }) {
+export function mountResultsView(root, { lastRecord, store, roomCode = 'CLASE', onPlayAgain, onReturnToStart, onOpenPlayers, onOpenDashboard }) {
   let syncNotice = '';
   let syncError = false;
   let pasteDrawerOpen = false;
@@ -29,12 +29,12 @@ export function mountResultsView(root, { lastRecord, store, onPlayAgain, onRetur
     const totalCount = store.records.length;
 
     const topSectionHtml = lastRecord
-      ? buildRunSummaryHtml(lastRecord)
+      ? buildRunSummaryHtml(lastRecord, roomCode)
       : `
         <header class="panel telemetry-head-card">
           <div>
             <h1 class="telemetry-title">TELEMETRÍA DE CLASE</h1>
-            <p class="panel-subcopy">Comparativa acumulada y unificación JSON</p>
+            <p class="panel-subcopy">Sala en vivo: <strong>${escapeHtml(roomCode)}</strong> · Comparativa acumulada</p>
           </div>
           <span class="pill-badge-cyan">${totalCount} REG.</span>
         </header>
@@ -46,6 +46,15 @@ export function mountResultsView(root, { lastRecord, store, onPlayAgain, onRetur
       <div class="results-layout">
         <main class="screen-shell results-scroll">
           ${topSectionHtml}
+
+          <button type="button" id="btn-dashboard-shortcut" class="btn-projector-banner">
+            <span class="projector-icon">📺</span>
+            <span class="projector-copy">
+              <strong>DASHBOARD EN VIVO · SALA ${escapeHtml(roomCode)}</strong>
+              <small>Ver código QR, podio y estadísticas en tiempo real</small>
+            </span>
+            <span class="chevron-right">›</span>
+          </button>
 
           <button type="button" id="btn-players-shortcut" class="players-banner-btn">
             <span class="players-banner-icon">★</span>
@@ -151,6 +160,7 @@ export function mountResultsView(root, { lastRecord, store, onPlayAgain, onRetur
       if (lastRecord) onOpenPlayers(lastRecord.initials);
     });
 
+    root.querySelector('#btn-dashboard-shortcut')?.addEventListener('click', () => onOpenDashboard?.());
     root.querySelector('#btn-players-shortcut')?.addEventListener('click', () => onOpenPlayers(null));
 
     root.querySelectorAll('.history-row-btn').forEach((btn) => {
@@ -261,7 +271,7 @@ export function mountResultsView(root, { lastRecord, store, onPlayAgain, onRetur
   render();
 }
 
-function buildRunSummaryHtml(rec) {
+function buildRunSummaryHtml(rec, roomCode = 'CLASE') {
   const modeDef = GAME_MODE_MAP[rec.mode] || GAME_MODE_MAP.director2026;
   const statusColor = rec.didSurvive ? RELICARIO_PALETTE.graceJade : RELICARIO_PALETTE.vermilion;
   const stressColor = stressTierFromIndex(rec.averageStress).color;
@@ -291,6 +301,11 @@ function buildRunSummaryHtml(rec) {
         ${metricPillHtml('BAJAS', `${rec.kills}`, RELICARIO_PALETTE.coldSilver)}
         ${metricPillHtml('ESTRÉS MEDIO', `${Math.round(rec.averageStress)}%`, stressColor)}
         ${metricPillHtml('CURAS', `${rec.medkitsCollected || 0}`, RELICARIO_PALETTE.graceJade)}
+      </div>
+
+      <div class="run-live-synced-note">
+        <span class="pulse-dot"></span>
+        <span>Enviado en tiempo real al Dashboard de la sala <strong>${escapeHtml(roomCode)}</strong></span>
       </div>
     </section>
   `;
