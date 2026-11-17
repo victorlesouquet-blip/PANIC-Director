@@ -5,3 +5,7 @@ DerivedData/
 *.ipa
 *.dSYM.zip
 *.dSYM
+
+# Web Three.js build & dependencies
+web/node_modules/
+web/dist/

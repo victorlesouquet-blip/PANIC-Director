@@ -1,0 +1,19 @@
+{
+  "name": "panic-director-web-3d",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "PANIC DIRECTOR — Edición Web 3D en Three.js con los 3 motores de IA comparativos (1985, 2026 e Híbrido)",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "vite build",
+    "preview": "vite preview --host",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "three": "^0.187.0"
+  },
+  "devDependencies": {
+    "vite": "^8.3.8"
+  }
+}
