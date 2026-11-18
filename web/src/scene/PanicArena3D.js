@@ -3,10 +3,13 @@
 
 import * as THREE from 'three';
 import {
+  CAMPAIGN_PHASES,
   GAME_MODE_MAP,
+  PHASE_TRANSITION_DURATION,
   PLAYER_AVATAR_MAP,
   RELICARIO_PALETTE,
-  stressTierFromIndex
+  stressTierFromIndex,
+  TOTAL_RUN_DURATION
 } from '../engine/constants.js';
 import { createWaveDirector, StressMetricsTracker } from '../engine/aiDirector.js';
 import {
@@ -17,7 +20,6 @@ import {
   SharedThreeAssets
 } from './meshes3d.js';
 
-const TOTAL_RUN_DURATION = 60.0;
 const PLAYER_MAX_HP = 100;
 const BASE_PLAYER_SPEED = 208.0;
 
@@ -44,10 +46,23 @@ function randomRange(min, max) {
   return min + Math.random() * (max - min);
 }
 
+function createEmptyPhaseStat(entered = false) {
+  return {
+    entered,
+    survivedSeconds: 0,
+    didSurvive: false,
+    kills: 0,
+    medkitsCollected: 0,
+    stressIntegral: 0,
+    sampleTime: 0,
+    peakStress: 18
+  };
+}
+
 export class PanicArena3D {
   constructor({
     container,
-    modeId,
+    modeId = 'unified',
     initials,
     avatarId,
     audio,
@@ -57,8 +72,9 @@ export class PanicArena3D {
     onPauseShortcut
   }) {
     this.container = container;
-    this.modeId = modeId;
-    this.modeDef = GAME_MODE_MAP[modeId] || GAME_MODE_MAP.director2026;
+    this.modeId = 'unified';
+    this.currentPhaseIndex = 0;
+    this.modeDef = CAMPAIGN_PHASES[0];
     this.initials = initials;
     this.avatarId = avatarId;
     this.avatarDef = PLAYER_AVATAR_MAP[avatarId] || PLAYER_AVATAR_MAP.penitente;
@@ -75,6 +91,14 @@ export class PanicArena3D {
     this.needsPausedRender = false;
     this.rafId = null;
     this.lastFrameTime = null;
+    this.phaseTransition = null;
+
+    // Telemetría desglosada por cada uno de los 3 tramos de 40s
+    this.phaseStats = {
+      classic1985: createEmptyPhaseStat(true),
+      hybrid1985x2026: createEmptyPhaseStat(false),
+      director2026: createEmptyPhaseStat(false)
+    };
 
     // Estado del jugador y progresión
     this.playerPos = { x: 0, y: 0 };
@@ -86,9 +110,9 @@ export class PanicArena3D {
     this.currentXP = 0;
     this.xpToNextLevel = xpRequiredForLevel(1);
 
-    // Motores de IA
+    // Motores de IA (Campaña unificada de 3 fases: 1985 -> Híbrido -> IA Directora 2026)
     this.stressTracker = new StressMetricsTracker();
-    this.waveDirector = createWaveDirector(this.modeId);
+    this.waveDirector = createWaveDirector('unified');
     this.previousStressTier = this.stressTracker.currentTier;
     this.lastDirective = null;
 
@@ -734,10 +758,93 @@ export class PanicArena3D {
     }
   }
 
+  #triggerPhaseTransition(nextPhaseIdx) {
+    this.currentPhaseIndex = nextPhaseIdx;
+    this.modeDef = CAMPAIGN_PHASES[nextPhaseIdx] || CAMPAIGN_PHASES[2];
+    const phaseStat = this.phaseStats[this.modeDef.id];
+    if (phaseStat) {
+      phaseStat.entered = true;
+    }
+
+    // Desarmar todos los ataques y proyectiles enemigos durante la pausa de 5s
+    this.enemyProjectiles.length = 0;
+    for (let i = 0; i < this.enemies.length; i++) {
+      const e = this.enemies[i];
+      e.isSpitTelegraphing = false;
+      e.isPouncing = false;
+      e.abilityActiveTimer = 0;
+      e.telegraphActive = false;
+      if (e.stalkerPhase && e.stalkerPhase.type !== 'stalking') {
+        e.stalkerPhase = { type: 'stalking', cooldown: 1.4 };
+      }
+    }
+
+    this.playerVelocity.dx = 0;
+    this.playerVelocity.dy = 0;
+    this.#releaseJoystick();
+    this.#spawnShockRing(this.playerPos.x, this.playerPos.y, this.modeDef.accentColor, 58);
+    this.audio?.triggerLevelUp();
+
+    this.phaseTransition = {
+      active: true,
+      remainingSec: PHASE_TRANSITION_DURATION,
+      totalSec: PHASE_TRANSITION_DURATION,
+      phaseNumber: this.modeDef.phaseNumber,
+      phaseId: this.modeDef.id,
+      kicker: this.modeDef.transitionKicker,
+      headline: this.modeDef.transitionHeadline,
+      description: this.modeDef.transitionDescription,
+      rangeLabel: this.modeDef.rangeLabel,
+      accentColor: this.modeDef.accentColor
+    };
+
+    this.#publishHUDNow(this.lastDirective);
+  }
+
   #stepSimulation(dt) {
+    // Pausa automática de 5 segundos al cambiar de fase (sin ataques ni daño, con cuenta atrás)
+    if (this.phaseTransition && this.phaseTransition.active) {
+      this.phaseTransition.remainingSec = Math.max(0, this.phaseTransition.remainingSec - dt);
+      this.playerVisual.body.visible = true;
+      this.#animateAmbientEmbers(dt);
+      this.#updateCamera(dt * 5.0);
+
+      if (this.phaseTransition.remainingSec <= 0) {
+        this.phaseTransition = null;
+        this.invulnerabilityTimer = Math.max(this.invulnerabilityTimer, 1.5);
+        this.#spawnShockRing(this.playerPos.x, this.playerPos.y, this.modeDef.accentColor, 52);
+        this.audio?.triggerLevelUp();
+      }
+
+      this.#publishHUDNow(this.lastDirective);
+      return;
+    }
+
     this.elapsedTime += dt;
+
+    // Cambio de Fase 1 (0-40s: 1985) -> Fase 2 (40-80s: Híbrido)
+    if (this.currentPhaseIndex === 0 && this.elapsedTime >= 40.0) {
+      this.elapsedTime = 40.0;
+      this.phaseStats.classic1985.survivedSeconds = 40.0;
+      this.phaseStats.classic1985.didSurvive = true;
+      this.#triggerPhaseTransition(1);
+      return;
+    }
+
+    // Cambio de Fase 2 (40-80s: Híbrido) -> Fase 3 (80-120s: IA Directora 2026)
+    if (this.currentPhaseIndex === 1 && this.elapsedTime >= 80.0) {
+      this.elapsedTime = 80.0;
+      this.phaseStats.hybrid1985x2026.survivedSeconds = 40.0;
+      this.phaseStats.hybrid1985x2026.didSurvive = true;
+      this.#triggerPhaseTransition(2);
+      return;
+    }
+
+    // Fin de la partida unificada de 2 minutos (120s)
     if (this.elapsedTime >= TOTAL_RUN_DURATION) {
       this.elapsedTime = TOTAL_RUN_DURATION;
+      this.phaseStats.director2026.survivedSeconds = 40.0;
+      this.phaseStats.director2026.didSurvive = true;
       this.#finishRun(true);
       return;
     }
@@ -800,13 +907,24 @@ export class PanicArena3D {
     });
     this.justTookDamageFlag = false;
 
+    // Registrar métricas en el tramo temporal activo
+    const activePhaseDef = CAMPAIGN_PHASES[this.currentPhaseIndex] || CAMPAIGN_PHASES[0];
+    const pStat = this.phaseStats[activePhaseDef.id];
+    if (pStat) {
+      pStat.entered = true;
+      pStat.survivedSeconds = Math.min(40.0, Math.max(0, this.elapsedTime - activePhaseDef.startSec));
+      pStat.stressIntegral += stressValue * dt;
+      pStat.sampleTime += dt;
+      pStat.peakStress = Math.max(pStat.peakStress, stressValue);
+    }
+
     const newTier = stressTierFromIndex(stressValue);
     if (newTier.rawValue > this.previousStressTier.rawValue) {
       this.audio?.triggerStressTierUp(newTier.rawValue);
     }
     this.previousStressTier = newTier;
 
-    // 3. Evaluación del motor de IA (1985 vs 2026 vs Híbrido)
+    // 3. Evaluación del motor de IA unificado por tramos (0-40s 1985, 40-80s Híbrido, 80-120s IA 2026)
     const directive = this.waveDirector.evaluate({
       dt,
       elapsedTime: this.elapsedTime,
@@ -1076,6 +1194,10 @@ export class PanicArena3D {
       }
       this.enemies.pop();
       this.kills += 1;
+      const activePhase = CAMPAIGN_PHASES[this.currentPhaseIndex] || CAMPAIGN_PHASES[0];
+      if (this.phaseStats[activePhase.id]) {
+        this.phaseStats[activePhase.id].kills += 1;
+      }
       this.#grantXP(xpValue);
     }
   }
@@ -1861,14 +1983,16 @@ export class PanicArena3D {
   #publishHUDNow(directive) {
     if (this.hasEnded) return;
     const activeDirective = directive || this.lastDirective;
-    let fallbackMsg = 'IA activa → Leyendo estrés';
-    if (this.modeId === 'classic1985') {
-      fallbackMsg = 'Regla fija [0-15s] → Escalamiento continuo';
-    } else if (this.modeId === 'hybrid1985x2026') {
-      fallbackMsg = 'Mix 85×26 → Reloj fijo + IA';
+    const activePhaseDef = CAMPAIGN_PHASES[this.currentPhaseIndex] || CAMPAIGN_PHASES[0];
+    let fallbackMsg = 'Regla fija [0-40s] → Escalamiento continuo';
+    if (activePhaseDef.id === 'hybrid1985x2026') {
+      fallbackMsg = 'Mix 85×26 [40s-1m20s] → Reloj fijo + IA';
+    } else if (activePhaseDef.id === 'director2026') {
+      fallbackMsg = 'IA Directora [1m20s-2m] → Leyendo estrés en vivo';
     }
 
     this.onSnapshotUpdate?.({
+      elapsedTime: this.elapsedTime,
       timeRemaining: Math.max(0, TOTAL_RUN_DURATION - this.elapsedTime),
       hp: this.playerHP,
       maxHP: PLAYER_MAX_HP,
@@ -1878,19 +2002,45 @@ export class PanicArena3D {
       stressTier: this.stressTracker.currentTier,
       directorMessage: activeDirective?.microMessage || fallbackMsg,
       isInterventionActive: Boolean(activeDirective?.isInterventionActive),
-      medkitsCollected: this.medkitsCollected
+      medkitsCollected: this.medkitsCollected,
+      currentPhase: activePhaseDef,
+      phaseTransition: this.phaseTransition
     });
+  }
+
+  #buildSerializedPhaseBreakdown() {
+    const out = {};
+    for (const phase of CAMPAIGN_PHASES) {
+      const raw = this.phaseStats[phase.id];
+      const avgStress =
+        raw.sampleTime > 0.05
+          ? Math.min(100, Math.max(0, raw.stressIntegral / raw.sampleTime))
+          : this.stressTracker.currentStress;
+      out[phase.id] = {
+        entered: Boolean(raw.entered),
+        survivedSeconds: Number(raw.survivedSeconds.toFixed(2)),
+        didSurvive: Boolean(raw.didSurvive),
+        kills: raw.kills,
+        medkitsCollected: raw.medkitsCollected,
+        averageStress: Number(avgStress.toFixed(1)),
+        peakStress: Number(raw.peakStress.toFixed(1))
+      };
+    }
+    return out;
   }
 
   #finishRun(didSurvive) {
     if (this.hasEnded) return;
     this.hasEnded = true;
     this.isUserPaused = true;
+    this.phaseTransition = null;
     this.#releaseJoystick();
 
     const survived = didSurvive ? TOTAL_RUN_DURATION : Math.min(TOTAL_RUN_DURATION, this.elapsedTime);
+    const activePhaseDef = CAMPAIGN_PHASES[this.currentPhaseIndex] || CAMPAIGN_PHASES[0];
 
     this.onSnapshotUpdate?.({
+      elapsedTime: survived,
       timeRemaining: didSurvive ? 0 : Math.max(0, TOTAL_RUN_DURATION - this.elapsedTime),
       hp: this.playerHP,
       maxHP: PLAYER_MAX_HP,
@@ -1898,22 +2048,26 @@ export class PanicArena3D {
       playerLevel: this.playerLevel,
       stressIndex: this.stressTracker.currentStress,
       stressTier: this.stressTracker.currentTier,
-      directorMessage: didSurvive ? 'Experimento completado (60s)' : 'Sujeto caído en combate',
+      directorMessage: didSurvive ? '¡Campaña completada (2m 00s)!' : 'Sujeto caído en combate',
       isInterventionActive: false,
-      medkitsCollected: this.medkitsCollected
+      medkitsCollected: this.medkitsCollected,
+      currentPhase: activePhaseDef,
+      phaseTransition: null
     });
 
     const record = {
       id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`,
       initials: this.initials,
       avatar: this.avatarId,
-      mode: this.modeId,
+      mode: activePhaseDef.id,
+      reachedPhase: activePhaseDef.phaseNumber,
       survivedSeconds: survived,
       didSurvive,
       kills: this.kills,
       averageStress: this.stressTracker.averageStress,
       peakStress: this.stressTracker.peakStress,
       medkitsCollected: this.medkitsCollected,
+      phaseBreakdown: this.#buildSerializedPhaseBreakdown(),
       playedAt: new Date().toISOString()
     };
 

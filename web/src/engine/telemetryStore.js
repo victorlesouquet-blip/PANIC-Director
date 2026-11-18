@@ -11,8 +11,29 @@ export function normalizeInitials(raw) {
 }
 
 export function aggregateModeStats(records, modeId) {
-  const filtered = records.filter((r) => r.mode === modeId);
-  if (filtered.length === 0) {
+  const entries = [];
+  for (const r of records) {
+    if (r?.phaseBreakdown && r.phaseBreakdown[modeId] && r.phaseBreakdown[modeId].entered) {
+      const pb = r.phaseBreakdown[modeId];
+      entries.push({
+        didSurvive: Boolean(pb.didSurvive),
+        survivedSeconds: Number(pb.survivedSeconds) || 0,
+        kills: Number(pb.kills) || 0,
+        averageStress: Number(pb.averageStress) || 0,
+        peakStress: Number(pb.peakStress) || 0
+      });
+    } else if (r?.mode === modeId) {
+      entries.push({
+        didSurvive: Boolean(r.didSurvive),
+        survivedSeconds: Number(r.survivedSeconds) || 0,
+        kills: Number(r.kills) || 0,
+        averageStress: Number(r.averageStress) || 0,
+        peakStress: Number(r.peakStress) || 0
+      });
+    }
+  }
+
+  if (entries.length === 0) {
     return {
       mode: modeId,
       runCount: 0,
@@ -24,12 +45,12 @@ export function aggregateModeStats(records, modeId) {
     };
   }
 
-  const count = filtered.length;
-  const survivedCount = filtered.filter((r) => r.didSurvive).length;
-  const totalTime = filtered.reduce((acc, r) => acc + r.survivedSeconds, 0);
-  const totalKills = filtered.reduce((acc, r) => acc + r.kills, 0);
-  const totalAvgStress = filtered.reduce((acc, r) => acc + r.averageStress, 0);
-  const totalPeakStress = filtered.reduce((acc, r) => acc + r.peakStress, 0);
+  const count = entries.length;
+  const survivedCount = entries.filter((e) => e.didSurvive).length;
+  const totalTime = entries.reduce((acc, e) => acc + e.survivedSeconds, 0);
+  const totalKills = entries.reduce((acc, e) => acc + e.kills, 0);
+  const totalAvgStress = entries.reduce((acc, e) => acc + e.averageStress, 0);
+  const totalPeakStress = entries.reduce((acc, e) => acc + e.peakStress, 0);
 
   return {
     mode: modeId,
@@ -120,13 +141,15 @@ export class TelemetryStore {
       id: record.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`),
       initials: normalizeInitials(record.initials),
       avatar: record.avatar || null,
-      mode: record.mode,
+      mode: record.mode || 'unified',
       survivedSeconds: Number(record.survivedSeconds) || 0,
       didSurvive: Boolean(record.didSurvive),
       kills: Number(record.kills) || 0,
       averageStress: Number(record.averageStress) || 0,
       peakStress: Number(record.peakStress) || 0,
       medkitsCollected: Number(record.medkitsCollected) || 0,
+      reachedPhase: Number(record.reachedPhase) || (Number(record.survivedSeconds) >= 80 ? 3 : Number(record.survivedSeconds) >= 40 ? 2 : 1),
+      phaseBreakdown: record.phaseBreakdown && typeof record.phaseBreakdown === 'object' ? record.phaseBreakdown : null,
       playedAt: record.playedAt || new Date().toISOString()
     };
     this.records.unshift(cleanRecord);
@@ -139,7 +162,11 @@ export class TelemetryStore {
   }
 
   playerProfiles({ modeFilter = null, sortBy = 'overallRanking' } = {}) {
-    const scoped = modeFilter ? this.records.filter((r) => r.mode === modeFilter) : this.records;
+    const scoped = modeFilter
+      ? this.records.filter(
+          (r) => r.mode === modeFilter || Boolean(r.phaseBreakdown?.[modeFilter]?.entered)
+        )
+      : this.records;
     const grouped = new Map();
     for (const r of scoped) {
       const key = normalizeInitials(r.initials);
@@ -244,6 +271,8 @@ export class TelemetryStore {
         averageStress: Number(item.averageStress) || 0,
         peakStress: Number(item.peakStress) || 0,
         medkitsCollected: Number(item.medkitsCollected) || 0,
+        reachedPhase: Number(item.reachedPhase) || (Number(item.survivedSeconds) >= 80 ? 3 : Number(item.survivedSeconds) >= 40 ? 2 : 1),
+        phaseBreakdown: item.phaseBreakdown && typeof item.phaseBreakdown === 'object' ? item.phaseBreakdown : null,
         playedAt: item.playedAt || new Date().toISOString()
       };
       this.records.push(normalized);

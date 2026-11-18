@@ -2878,3 +2878,304 @@ textarea:focus-visible {
   word-break: break-all;
 }
 
+/* MARK: - Modo Único Progresivo de 2 Minutos (3 Fases + Pausa de 5s con Cuenta Atrás) */
+
+.campaign-roadmap-panel {
+  gap: 12px;
+}
+
+.campaign-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.campaign-step {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(8, 6, 6, 0.56);
+  border: 1px solid var(--border-stone);
+  border-left-width: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.campaign-step-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.campaign-step-time {
+  padding: 3px 7px;
+  border-radius: 5px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+}
+
+.campaign-step-title {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--ivory);
+}
+
+.campaign-step-badge {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.campaign-step-sub {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.38;
+  color: rgba(230, 204, 178, 0.86);
+}
+
+.campaign-truce-divider {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 10px;
+  border-radius: 7px;
+  background: rgba(52, 245, 197, 0.1);
+  border: 1px dashed rgba(52, 245, 197, 0.45);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.6px;
+  color: var(--grace-jade);
+  text-align: center;
+}
+
+/* Barra superior de 3 fases en el HUD 3D */
+
+.hud-phases-bar {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  background: rgba(14, 11, 12, 0.84);
+  border: 1px solid var(--border-stone);
+  backdrop-filter: blur(8px);
+}
+
+.hud-phase-seg {
+  position: relative;
+  height: 22px;
+  border-radius: 6px;
+  background: rgba(8, 6, 6, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.hud-phase-seg.is-active {
+  border-color: rgba(255, 255, 255, 0.55);
+  box-shadow: 0 0 12px rgba(255, 184, 0, 0.28);
+}
+
+.hud-phase-seg.is-done {
+  border-color: rgba(52, 245, 197, 0.45);
+}
+
+.hud-phase-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 0%;
+  opacity: 0.34;
+  transition: width 0.12s linear;
+}
+
+.hud-phase-lbl {
+  position: relative;
+  z-index: 1;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  color: var(--ivory);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+  white-space: nowrap;
+}
+
+/* Aviso grande de Cambio de Fase con Pausa de 5s y Cuenta Atrás */
+
+.phase-transition-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  background: radial-gradient(circle at center, rgba(18, 12, 14, 0.88) 0%, rgba(6, 4, 5, 0.94) 100%);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  animation: fadePhaseOverlay 0.22s ease-out;
+}
+
+@keyframes fadePhaseOverlay {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.phase-transition-card {
+  width: 100%;
+  max-width: 440px;
+  padding: 26px 22px;
+  border-radius: 20px;
+  background: linear-gradient(180deg, #21181A 0%, #120D0E 100%);
+  border: 2.5px solid var(--liturgical-gold);
+  box-shadow: 0 24px 68px rgba(0, 0, 0, 0.88), 0 0 42px rgba(255, 184, 0, 0.22);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+}
+
+.phase-tr-kicker {
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 800;
+  letter-spacing: 1.4px;
+}
+
+.phase-tr-title {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: clamp(22px, 5vw, 30px);
+  font-weight: 900;
+  letter-spacing: 0.8px;
+  color: var(--ivory);
+  line-height: 1.15;
+}
+
+.phase-tr-sub {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: var(--old-bone);
+  max-width: 36ch;
+}
+
+.phase-tr-safe-badge {
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: rgba(52, 245, 197, 0.14);
+  border: 1px solid rgba(52, 245, 197, 0.48);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.6px;
+  color: var(--grace-jade);
+}
+
+.phase-tr-countdown-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  margin: 4px 0;
+}
+
+.phase-tr-countdown-num {
+  font-family: var(--font-mono);
+  font-size: clamp(56px, 12vw, 76px);
+  font-weight: 900;
+  line-height: 1;
+  color: var(--ivory);
+  text-shadow: 0 0 28px rgba(255, 184, 0, 0.55);
+  font-variant-numeric: tabular-nums;
+}
+
+.phase-tr-countdown-lbl {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 1.1px;
+  color: rgba(230, 204, 178, 0.8);
+}
+
+.phase-tr-bar-track {
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(8, 6, 6, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  overflow: hidden;
+}
+
+.phase-tr-bar-fill {
+  height: 100%;
+  width: 100%;
+  border-radius: 999px;
+  transition: width 0.08s linear;
+}
+
+/* Mini tarjetas de desglose por fase en Resumen de Partida */
+
+.run-phases-mini-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-top: 4px;
+}
+
+@media (max-width: 420px) {
+  .run-phases-mini-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.run-phase-mini-card {
+  padding: 8px 9px;
+  border-radius: 9px;
+  background: rgba(8, 6, 6, 0.52);
+  border: 1px solid var(--border-stone);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.run-phase-mini-hdr {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.run-phase-mini-val {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 800;
+  color: var(--ivory);
+}
+
+.run-phase-mini-sub {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: rgba(230, 204, 178, 0.78);
+}
+
+

@@ -1,8 +1,7 @@
 // Pantalla de Inicio Recreativa (Iniciales, 12 Avatares 3D, 3 Motores de IA y Accesos de Telemetría)
 
 import {
-  GAME_MODES,
-  GAME_MODE_MAP,
+  CAMPAIGN_PHASES,
   PLAYER_AVATARS,
   PLAYER_AVATAR_MAP,
   RELICARIO_PALETTE
@@ -13,11 +12,8 @@ import { escapeHtml } from './domUtils.js';
 const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
 
 export function mountStartView(root, state, actions) {
-  const modeDef = GAME_MODE_MAP[state.selectedMode] || GAME_MODES[1];
   const avatarDef = PLAYER_AVATAR_MAP[state.selectedAvatar] || PLAYER_AVATARS[0];
   const initialsArr = [...state.initialsChars];
-
-  const startFg = state.selectedMode === 'director2026' ? RELICARIO_PALETTE.ivory : '#080606';
 
   root.innerHTML = `
     <main class="screen-shell start-screen" aria-labelledby="main-title">
@@ -27,7 +23,7 @@ export function mountStartView(root, state, actions) {
             <polygon points="12,1 23,12 12,23 1,12" fill="none" stroke="${RELICARIO_PALETTE.vermilion}" stroke-width="1.9" />
             <ellipse cx="12" cy="12" rx="3.2" ry="4.8" fill="${RELICARIO_PALETTE.liturgicalGold}" />
           </svg>
-          <span class="kicker-text">LABORATORIO DE IA · EDICIÓN 3D · 60s</span>
+          <span class="kicker-text">LABORATORIO DE IA · EDICIÓN 3D · 2 MIN (3 FASES)</span>
         </div>
         <h1 id="main-title" class="hero-title">PANIC DIRECTOR</h1>
         <p class="hero-subtitle">Relicario de Ceniza y Carmesí</p>
@@ -110,34 +106,30 @@ export function mountStartView(root, state, actions) {
         </div>
       </section>
 
-      <section class="panel-group" aria-label="Selección de motor de IA">
-        <h2 class="panel-label standalone-label">SELECCIONA MOTOR DE IA</h2>
-        <div class="mode-list" role="radiogroup" aria-label="Motores de IA">
-          ${GAME_MODES.map((m) => {
-            const isSel = m.id === state.selectedMode;
-            return `
-              <button
-                type="button"
-                id="btn-mode-${m.id}"
-                class="mode-card ${isSel ? 'is-selected' : ''}"
-                data-mode-id="${m.id}"
-                role="radio"
-                aria-checked="${isSel ? 'true' : 'false'}"
-                style="${isSel ? `border-color:${m.accentColor}; background:${m.accentColor}19;` : ''}"
-              >
-                <span class="mode-radio" style="border-color:${isSel ? m.accentColor : 'rgba(255,255,255,0.28)'}">
-                  ${isSel ? `<span class="mode-radio-dot" style="background:${m.accentColor}"></span>` : ''}
+      <section class="panel campaign-roadmap-panel" aria-label="Modo Único Progresivo de 2 Minutos">
+        <div class="panel-head">
+          <h2 class="panel-label gold-label">MODO ÚNICO · EVOLUCIÓN 3 FASES (2 MIN)</h2>
+          <span class="micro-mono-cyan">DIFICULTAD CRECIENTE</span>
+        </div>
+
+        <div class="campaign-timeline">
+          ${CAMPAIGN_PHASES.map((ph, idx) => `
+            <div class="campaign-step" style="border-left-color:${ph.accentColor};">
+              <div class="campaign-step-top">
+                <span class="campaign-step-time" style="color:${ph.accentColor}; background:${ph.accentColor}24;">
+                  ${escapeHtml(ph.windowLabel)}
                 </span>
-                <span class="mode-copy">
-                  <span class="mode-top-row">
-                    <span class="mode-title">${escapeHtml(m.displayTitle)}</span>
-                    <span class="mode-badge" style="color:${m.accentColor}; background:${m.accentColor}26;">${escapeHtml(m.shortBadge)}</span>
-                  </span>
-                  <span class="mode-sub">${escapeHtml(m.subtitle)}</span>
-                </span>
-              </button>
-            `;
-          }).join('')}
+                <strong class="campaign-step-title">${escapeHtml(ph.displayTitle)}</strong>
+                <span class="campaign-step-badge" style="color:${ph.accentColor};">F${ph.phaseNumber}</span>
+              </div>
+              <p class="campaign-step-sub">${escapeHtml(ph.subtitle)}</p>
+            </div>
+            ${idx < CAMPAIGN_PHASES.length - 1 ? `
+              <div class="campaign-truce-divider" aria-label="Pausa de transición de 5 segundos">
+                <span>⏱ PAUSA DE 5s CON CUENTA ATRÁS · SIN ATAQUES AL CAMBIAR DE FASE</span>
+              </div>
+            ` : ''}
+          `).join('')}
         </div>
       </section>
 
@@ -146,9 +138,9 @@ export function mountStartView(root, state, actions) {
           type="button"
           id="btn-start-game"
           class="btn-primary-cta"
-          style="background:${modeDef.accentColor}; color:${startFg};"
+          style="background:${RELICARIO_PALETTE.vermilion}; color:${RELICARIO_PALETTE.ivory};"
         >
-          ▶ INICIAR PARTIDA 3D (60s)
+          ▶ INICIAR PARTIDA 3D (2 MIN · 3 FASES)
         </button>
 
         <p class="controls-caption">
@@ -213,13 +205,6 @@ export function mountStartView(root, state, actions) {
   root.querySelectorAll('.avatar-tile').forEach((btn) => {
     btn.addEventListener('click', () => {
       actions.onSelectAvatar(btn.dataset.avatarId);
-    });
-  });
-
-  // Motores
-  root.querySelectorAll('.mode-card').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      actions.onSelectMode(btn.dataset.modeId);
     });
   });
 

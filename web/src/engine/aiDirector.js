@@ -508,14 +508,100 @@ export class HybridMixDirector {
   }
 }
 
-export function createWaveDirector(modeId) {
+// MARK: - Motor Unificado por Tramos Temporales (0-40s 1985 -> 40s-1m20s Híbrido -> 1m20s-2m00s IA Directora 2026)
+
+export class UnifiedProgressiveDirector {
+  constructor() {
+    this.phase1Engine = new Classic1985Engine();
+    this.phase2Engine = new HybridMixDirector();
+    this.phase3Engine = new Adaptive2026Director();
+    this.reset();
+  }
+
+  reset() {
+    this.phase1Engine.reset();
+    this.phase2Engine.reset();
+    this.phase3Engine.reset();
+    this.hardestSpawnInterval = 0.60;
+    this.highestMaxEnemies = 24;
+    this.highestSpeedMultiplier = 1.08;
+  }
+
+  evaluate(input) {
+    const t = Math.max(0.0, Number(input.elapsedTime) || 0.0);
+    const globalProgress = Math.min(1.0, t / 120.0);
+
+    let rawDirective;
+    let activePhaseId;
+    let activePhaseNumber;
+
+    if (t < 40.0) {
+      // FASE 1 (0s - 40s): MODO 1985 (Reglas Matemáticas Fijas)
+      activePhaseId = 'classic1985';
+      activePhaseNumber = 1;
+      rawDirective = this.phase1Engine.evaluate({
+        ...input,
+        elapsedTime: t
+      });
+    } else if (t < 80.0) {
+      // FASE 2 (40s - 1m20s): MODO HÍBRIDO (1985 x 2026)
+      activePhaseId = 'hybrid1985x2026';
+      activePhaseNumber = 2;
+      const localT = t - 40.0;
+      // Escalamos el tiempo interno para que continúe la rampa por encima de donde acabó la Fase 1
+      rawDirective = this.phase2Engine.evaluate({
+        ...input,
+        elapsedTime: 15.0 + localT * 1.1
+      });
+    } else {
+      // FASE 3 (1m20s - 2m00s): MODO IA DIRECTORA 2026 (Clímax Adaptativo)
+      activePhaseId = 'director2026';
+      activePhaseNumber = 3;
+      const localT = t - 80.0;
+      rawDirective = this.phase3Engine.evaluate({
+        ...input,
+        elapsedTime: 30.0 + localT * 0.75
+      });
+    }
+
+    // Rampa global monotónica durante los 120 segundos (cada tramo incrementa la dificultad)
+    const floorInterval = 0.58 / (1.0 + 3.6 * globalProgress);
+    const floorEnemies = 24 + Math.round(54.0 * globalProgress);
+    const floorSpeed = 1.08 + 0.62 * globalProgress;
+
+    const candidateInterval = Math.min(rawDirective.spawnInterval, floorInterval);
+    const candidateEnemies = Math.max(rawDirective.maxActiveEnemies, floorEnemies);
+    const candidateSpeed = Math.max(rawDirective.enemySpeedMultiplier, floorSpeed);
+
+    this.hardestSpawnInterval = Math.min(this.hardestSpawnInterval, candidateInterval);
+    this.highestMaxEnemies = Math.max(this.highestMaxEnemies, candidateEnemies);
+    this.highestSpeedMultiplier = Math.max(this.highestSpeedMultiplier, candidateSpeed);
+
+    return {
+      ...rawDirective,
+      activePhaseId,
+      activePhaseNumber,
+      phaseId: activePhaseId,
+      phaseNumber: activePhaseNumber,
+      microMessage: `FASE ${activePhaseNumber}/3 · ${rawDirective.microMessage}`,
+      spawnInterval: this.hardestSpawnInterval,
+      maxActiveEnemies: this.highestMaxEnemies,
+      enemySpeedMultiplier: this.highestSpeedMultiplier
+    };
+  }
+}
+
+export function createWaveDirector(modeId = 'unified') {
   switch (modeId) {
     case 'classic1985':
       return new Classic1985Engine();
     case 'hybrid1985x2026':
       return new HybridMixDirector();
     case 'director2026':
-    default:
       return new Adaptive2026Director();
+    case 'unified':
+    default:
+      return new UnifiedProgressiveDirector();
   }
 }
+

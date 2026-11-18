@@ -1,12 +1,14 @@
 // Dashboard de Proyector en Tiempo Real para la Clase (16:9 Panorámico + QR + Podio + Comparativa 1985 vs 2026 vs Híbrido + Feed en Vivo)
 
 import {
-  GAME_MODES,
+  CAMPAIGN_PHASES,
   GAME_MODE_MAP,
   LEADERBOARD_SORT_METRICS,
   PLAYER_AVATARS,
   PLAYER_AVATAR_MAP,
   RELICARIO_PALETTE,
+  TOTAL_RUN_DURATION,
+  getPhaseForElapsedTime,
   stressTierFromIndex
 } from '../engine/constants.js';
 import { renderQrCodeSvg } from '../engine/qrCodeSvg.js';
@@ -27,12 +29,13 @@ export function mountDashboardView(root, { store, liveSync, audio, onReturnToSta
   let toastTimeout = null;
 
   const triggerToast = (rec) => {
-    const modeDef = GAME_MODE_MAP[rec.mode] || GAME_MODE_MAP.director2026;
+    const reachedPhase = rec.reachedPhase || (rec.survivedSeconds >= 80 ? 3 : rec.survivedSeconds >= 40 ? 2 : 1);
+    const phaseDef = CAMPAIGN_PHASES[Math.min(2, Math.max(0, reachedPhase - 1))];
     activeToast = {
       initials: rec.initials,
       avatar: rec.avatar || 'penitente',
-      modeTitle: modeDef.shortBadge,
-      modeColor: modeDef.accentColor,
+      modeTitle: `FASE ${reachedPhase} · ${phaseDef.shortBadge}`,
+      modeColor: phaseDef.accentColor,
       didSurvive: rec.didSurvive,
       survivedSeconds: rec.survivedSeconds,
       kills: rec.kills,
@@ -74,14 +77,24 @@ export function mountDashboardView(root, { store, liveSync, audio, onReturnToSta
   function updateActiveArenaBars(activePlayers) {
     const now = Date.now();
     activePlayers.forEach((p) => {
-      const elapsed = Math.min(60, Math.max(0, (now - p.startedAt) / 1000));
-      const pct = Math.min(100, (elapsed / 60) * 100);
+      const elapsed = Math.min(TOTAL_RUN_DURATION, Math.max(0, (now - p.startedAt) / 1000));
+      const pct = Math.min(100, (elapsed / TOTAL_RUN_DURATION) * 100);
+      const curPhase = getPhaseForElapsedTime(elapsed);
       const rowEl = root.querySelector(`[data-active-client="${CSS.escape(p.clientId)}"]`);
       if (rowEl) {
         const secEl = rowEl.querySelector('.active-arena-sec');
         const fillEl = rowEl.querySelector('.active-arena-bar-fill');
-        if (secEl) secEl.textContent = `${elapsed.toFixed(0)}s / 60s`;
-        if (fillEl) fillEl.style.width = `${pct.toFixed(1)}%`;
+        const badgeEl = rowEl.querySelector('.active-arena-phase-badge');
+        if (secEl) secEl.textContent = `${elapsed.toFixed(0)}s / 120s`;
+        if (fillEl) {
+          fillEl.style.width = `${pct.toFixed(1)}%`;
+          fillEl.style.background = curPhase.accentColor;
+        }
+        if (badgeEl) {
+          badgeEl.textContent = `F${curPhase.phaseNumber}·${curPhase.shortBadge}`;
+          badgeEl.style.color = curPhase.accentColor;
+          badgeEl.style.background = `${curPhase.accentColor}26`;
+        }
       }
     });
   }
@@ -89,49 +102,90 @@ export function mountDashboardView(root, { store, liveSync, audio, onReturnToSta
   function simulateClassRun() {
     const initials = DEMO_INITIALS_POOL[Math.floor(Math.random() * DEMO_INITIALS_POOL.length)];
     const avatar = PLAYER_AVATARS[Math.floor(Math.random() * PLAYER_AVATARS.length)].id;
-    const modes = ['classic1985', 'director2026', 'hybrid1985x2026'];
-    const mode = modes[Math.floor(Math.random() * modes.length)];
 
+    // Simular progresión a través de las 3 fases (0-40s 1985, 40-80s Híbrido, 80-120s IA 2026)
+    const roll = Math.random();
+    let survivedSeconds = 120.0;
     let didSurvive = false;
-    let survivedSeconds = 30;
-    let kills = 20;
-    let averageStress = 65;
-    let peakStress = 85;
-    let medkitsCollected = 1;
+    let reachedPhase = 1;
 
-    if (mode === 'director2026') {
-      didSurvive = Math.random() < 0.68;
-      survivedSeconds = didSurvive ? 60 : 41 + Math.random() * 17;
-      kills = Math.round(28 + Math.random() * 20);
-      averageStress = Math.round(61 + Math.random() * 13); // Zona de flujo 60-75%
-      peakStress = Math.min(98, averageStress + Math.round(14 + Math.random() * 14));
-      medkitsCollected = Math.round(2 + Math.random() * 2);
-    } else if (mode === 'classic1985') {
-      didSurvive = Math.random() < 0.25;
-      survivedSeconds = didSurvive ? 60 : 22 + Math.random() * 28;
-      kills = Math.round(16 + Math.random() * 18);
-      averageStress = Math.round(74 + Math.random() * 18);
-      peakStress = Math.min(100, averageStress + Math.round(12 + Math.random() * 14));
-      medkitsCollected = Math.round(Math.random() * 2);
+    if (roll < 0.22) {
+      // Cae en Fase 1 (0 - 40s)
+      reachedPhase = 1;
+      survivedSeconds = 22 + Math.random() * 17.5;
+    } else if (roll < 0.56) {
+      // Supera Fase 1 y cae en Fase 2 (40 - 80s)
+      reachedPhase = 2;
+      survivedSeconds = 45 + Math.random() * 34.0;
+    } else if (roll < 0.78) {
+      // Llega a Fase 3 (80 - 120s) pero cae antes de los 120s
+      reachedPhase = 3;
+      survivedSeconds = 85 + Math.random() * 33.5;
     } else {
-      didSurvive = Math.random() < 0.42;
-      survivedSeconds = didSurvive ? 60 : 31 + Math.random() * 24;
-      kills = Math.round(24 + Math.random() * 22);
-      averageStress = Math.round(69 + Math.random() * 16);
-      peakStress = Math.min(100, averageStress + Math.round(13 + Math.random() * 14));
-      medkitsCollected = Math.round(1 + Math.random() * 2);
+      // Sobrevive los 120s completos (las 3 fases)
+      reachedPhase = 3;
+      didSurvive = true;
+      survivedSeconds = 120.0;
     }
+
+    const p1Time = Math.min(40.0, survivedSeconds);
+    const p2Time = Math.max(0, Math.min(40.0, survivedSeconds - 40.0));
+    const p3Time = Math.max(0, Math.min(40.0, survivedSeconds - 80.0));
+
+    const p1Kills = Math.round((p1Time / 40) * (12 + Math.random() * 8));
+    const p2Kills = p2Time > 0 ? Math.round((p2Time / 40) * (16 + Math.random() * 10)) : 0;
+    const p3Kills = p3Time > 0 ? Math.round((p3Time / 40) * (20 + Math.random() * 12)) : 0;
+    const kills = p1Kills + p2Kills + p3Kills;
+
+    const p1Stress = Math.round(54 + Math.random() * 16);
+    const p2Stress = p2Time > 0 ? Math.round(68 + Math.random() * 16) : 0;
+    const p3Stress = p3Time > 0 ? Math.round(63 + Math.random() * 11) : 0; // Zona de flujo IA Directora
+
+    const weightedStress =
+      (p1Stress * p1Time + p2Stress * p2Time + p3Stress * p3Time) / Math.max(1, survivedSeconds);
+    const averageStress = Math.round(weightedStress);
+    const peakStress = Math.min(100, Math.max(p1Stress, p2Stress, p3Stress) + Math.round(12 + Math.random() * 12));
+    const medkitsCollected = Math.round(1 + (survivedSeconds / 45) * (1 + Math.random()));
+
+    const phaseBreakdown = {
+      classic1985: {
+        entered: true,
+        didSurvive: survivedSeconds >= 40.0,
+        survivedSeconds: Number(p1Time.toFixed(1)),
+        kills: p1Kills,
+        averageStress: p1Stress,
+        peakStress: Math.min(100, p1Stress + 12)
+      },
+      hybrid1985x2026: {
+        entered: p2Time > 0,
+        didSurvive: survivedSeconds >= 80.0,
+        survivedSeconds: Number(p2Time.toFixed(1)),
+        kills: p2Kills,
+        averageStress: p2Stress,
+        peakStress: p2Time > 0 ? Math.min(100, p2Stress + 14) : 0
+      },
+      director2026: {
+        entered: p3Time > 0,
+        didSurvive: didSurvive,
+        survivedSeconds: Number(p3Time.toFixed(1)),
+        kills: p3Kills,
+        averageStress: p3Stress,
+        peakStress: p3Time > 0 ? Math.min(100, p3Stress + 11) : 0
+      }
+    };
 
     const saved = store.recordRun({
       initials,
       avatar,
-      mode,
+      mode: 'unified',
       survivedSeconds: Number(survivedSeconds.toFixed(1)),
       didSurvive,
       kills,
       averageStress,
       peakStress,
       medkitsCollected,
+      reachedPhase,
+      phaseBreakdown,
       playedAt: new Date().toISOString()
     });
 
@@ -178,7 +232,7 @@ export function mountDashboardView(root, { store, liveSync, audio, onReturnToSta
             </button>
             <div class="dash-title-wrap">
               <div class="dash-kicker-row">
-                <span class="dash-kicker">PANIC DIRECTOR · PROYECTOR DE CLASE</span>
+                <span class="dash-kicker">PANIC DIRECTOR · PROYECTOR DE CLASE · 2 MIN (3 FASES)</span>
                 ${statusBadge}
               </div>
               <h1 class="dash-main-title">DASHBOARD EN TIEMPO REAL</h1>
@@ -195,7 +249,7 @@ export function mountDashboardView(root, { store, liveSync, audio, onReturnToSta
             <button type="button" id="btn-expand-qr" class="btn-dash-action btn-dash-gold">
               ⛶ AMPLIAR QR
             </button>
-            <button type="button" id="btn-simulate-run" class="btn-dash-action btn-dash-cyan" title="Añade una partida de prueba en tiempo real">
+            <button type="button" id="btn-simulate-run" class="btn-dash-action btn-dash-cyan" title="Añade una partida de prueba de 3 fases en tiempo real">
               ⚡ SIMULAR PARTIDA
             </button>
             <button type="button" id="btn-open-reset-room" class="btn-dash-action btn-dash-danger" title="Borra las partidas de la sala para empezar de cero">
@@ -227,7 +281,7 @@ export function mountDashboardView(root, { store, liveSync, audio, onReturnToSta
           <aside class="dash-col dash-col-left">
             <section class="panel dash-qr-panel" aria-label="Código QR para unirse en tiempo real">
               <div class="panel-head">
-                <h2 class="panel-label gold-label">1. ESCANEA Y JUEGA (60s)</h2>
+                <h2 class="panel-label gold-label">1. ESCANEA Y JUEGA (2 MIN · 3 FASES)</h2>
                 <span class="micro-mono-cyan">SALA ${escapeHtml(syncState.roomCode)}</span>
               </div>
 
@@ -293,12 +347,12 @@ export function mountDashboardView(root, { store, liveSync, audio, onReturnToSta
               <div class="dash-kpi-box">
                 <span class="dash-kpi-lbl">PARTIDAS</span>
                 <strong class="dash-kpi-num" style="color:${RELICARIO_PALETTE.ivory};">${totalRuns}</strong>
-                <span class="dash-kpi-sub">${totalSurvived} completadas (60s)</span>
+                <span class="dash-kpi-sub">${totalSurvived} victorias (2 min)</span>
               </div>
               <div class="dash-kpi-box">
-                <span class="dash-kpi-lbl">SUPERVIVENCIA</span>
+                <span class="dash-kpi-lbl">SUPERVIVENCIA 2M</span>
                 <strong class="dash-kpi-num" style="color:${RELICARIO_PALETTE.graceJade};">${globalSurvivalPct}%</strong>
-                <span class="dash-kpi-sub">tasa global de éxito</span>
+                <span class="dash-kpi-sub">completan las 3 fases</span>
               </div>
               <div class="dash-kpi-box">
                 <span class="dash-kpi-lbl">BAJAS TOTALES</span>
@@ -327,14 +381,14 @@ export function mountDashboardView(root, { store, liveSync, audio, onReturnToSta
               <div class="dash-ranking-header">
                 <div class="panel-head">
                   <h2 class="panel-label">CLASIFICACIÓN GENERAL (${profiles.length} JUGADORES)</h2>
-                  <div class="chips-scroll" role="group" aria-label="Filtrar por motor">
+                  <div class="chips-scroll" role="group" aria-label="Filtrar por fase">
                     <button
                       type="button"
                       class="chip-btn dash-mode-filter ${modeFilter === null ? 'is-selected' : ''}"
                       data-mode=""
                       style="${modeFilter === null ? `color:${RELICARIO_PALETTE.coldSilver}; border-color:${RELICARIO_PALETTE.coldSilver}; background:${RELICARIO_PALETTE.coldSilver}26;` : ''}"
-                    >Todos</button>
-                    ${GAME_MODES.map((m) => {
+                    >Todas</button>
+                    ${CAMPAIGN_PHASES.map((m) => {
                       const isSel = modeFilter === m.id;
                       return `
                         <button
@@ -342,7 +396,7 @@ export function mountDashboardView(root, { store, liveSync, audio, onReturnToSta
                           class="chip-btn dash-mode-filter ${isSel ? 'is-selected' : ''}"
                           data-mode="${m.id}"
                           style="${isSel ? `color:${m.accentColor}; border-color:${m.accentColor}; background:${m.accentColor}26;` : ''}"
-                        >${escapeHtml(m.tableHeader)}</button>
+                        >F${m.phaseNumber}·${escapeHtml(m.tableHeader)}</button>
                       `;
                     }).join('')}
                   </div>
@@ -372,39 +426,39 @@ export function mountDashboardView(root, { store, liveSync, audio, onReturnToSta
             </section>
           </section>
 
-          <!-- COLUMNA DERECHA: COMPARATIVA CIENTÍFICA 1985 vs 2026 vs HÍBRIDO -->
-          <aside class="dash-col dash-col-right" aria-label="Estadísticas comparativas en tiempo real">
+          <!-- COLUMNA DERECHA: COMPARATIVA CIENTÍFICA POR FASE (0-40s vs 40-80s vs 80-120s) -->
+          <aside class="dash-col dash-col-right" aria-label="Estadísticas comparativas por fase en tiempo real">
             <section class="panel dash-science-panel">
               <div class="panel-head">
-                <h2 class="panel-label gold-label">2. TELEMETRÍA COMPARATIVA EN VIVO</h2>
-                <span class="micro-mono-cyan">1985 vs 2026 vs HÍBR.</span>
+                <h2 class="panel-label gold-label">2. TELEMETRÍA POR FASE EN VIVO</h2>
+                <span class="micro-mono-cyan">0-40s · 40s-1:20 · 1:20-2:00</span>
               </div>
 
-              ${buildVisualComparisonBlock('TASA DE SUPERVIVENCIA (60s)', [
-                { label: '1985 · Fijo', count: stats1985.runCount, val: stats1985.survivalRatePercent, max: 100, text: stats1985.runCount ? `${Math.round(stats1985.survivalRatePercent)}%` : '—', color: RELICARIO_PALETTE.oldBone },
-                { label: '2026 · Director IA', count: stats2026.runCount, val: stats2026.survivalRatePercent, max: 100, text: stats2026.runCount ? `${Math.round(stats2026.survivalRatePercent)}%` : '—', color: RELICARIO_PALETTE.vermilion },
-                { label: 'Híbrido 85×26', count: statsHybrid.runCount, val: statsHybrid.survivalRatePercent, max: 100, text: statsHybrid.runCount ? `${Math.round(statsHybrid.survivalRatePercent)}%` : '—', color: RELICARIO_PALETTE.liturgicalGold }
+              ${buildVisualComparisonBlock('TASA DE SUPERACIÓN DE CADA FASE (40s POR TRAMO)', [
+                { label: 'F1 · 1985 (0–40s)', count: stats1985.runCount, val: stats1985.survivalRatePercent, max: 100, text: stats1985.runCount ? `${Math.round(stats1985.survivalRatePercent)}%` : '—', color: RELICARIO_PALETTE.oldBone },
+                { label: 'F2 · Híbrido (40s–1:20)', count: statsHybrid.runCount, val: statsHybrid.survivalRatePercent, max: 100, text: statsHybrid.runCount ? `${Math.round(statsHybrid.survivalRatePercent)}%` : '—', color: RELICARIO_PALETTE.liturgicalGold },
+                { label: 'F3 · IA 2026 (1:20–2:00)', count: stats2026.runCount, val: stats2026.survivalRatePercent, max: 100, text: stats2026.runCount ? `${Math.round(stats2026.survivalRatePercent)}%` : '—', color: RELICARIO_PALETTE.vermilion }
               ])}
 
-              ${buildVisualComparisonBlock('TIEMPO MEDIO DE SUPERVIVENCIA (máx. 60s)', [
-                { label: '1985 · Fijo', count: stats1985.runCount, val: stats1985.avgSurvivedSeconds, max: 60, text: stats1985.runCount ? `${stats1985.avgSurvivedSeconds.toFixed(1)}s` : '—', color: RELICARIO_PALETTE.oldBone },
-                { label: '2026 · Director IA', count: stats2026.runCount, val: stats2026.avgSurvivedSeconds, max: 60, text: stats2026.runCount ? `${stats2026.avgSurvivedSeconds.toFixed(1)}s` : '—', color: RELICARIO_PALETTE.vermilion },
-                { label: 'Híbrido 85×26', count: statsHybrid.runCount, val: statsHybrid.avgSurvivedSeconds, max: 60, text: statsHybrid.runCount ? `${statsHybrid.avgSurvivedSeconds.toFixed(1)}s` : '—', color: RELICARIO_PALETTE.liturgicalGold }
+              ${buildVisualComparisonBlock('TIEMPO MEDIO EN CADA FASE (máx. 40s)', [
+                { label: 'F1 · 1985 (0–40s)', count: stats1985.runCount, val: stats1985.avgSurvivedSeconds, max: 40, text: stats1985.runCount ? `${stats1985.avgSurvivedSeconds.toFixed(1)}s` : '—', color: RELICARIO_PALETTE.oldBone },
+                { label: 'F2 · Híbrido (40s–1:20)', count: statsHybrid.runCount, val: statsHybrid.avgSurvivedSeconds, max: 40, text: statsHybrid.runCount ? `${statsHybrid.avgSurvivedSeconds.toFixed(1)}s` : '—', color: RELICARIO_PALETTE.liturgicalGold },
+                { label: 'F3 · IA 2026 (1:20–2:00)', count: stats2026.runCount, val: stats2026.avgSurvivedSeconds, max: 40, text: stats2026.runCount ? `${stats2026.avgSurvivedSeconds.toFixed(1)}s` : '—', color: RELICARIO_PALETTE.vermilion }
               ])}
 
-              ${buildVisualComparisonBlock('BAJAS MEDIAS POR PARTIDA', [
-                { label: '1985 · Fijo', count: stats1985.runCount, val: stats1985.avgKills, max: Math.max(40, stats1985.avgKills, stats2026.avgKills, statsHybrid.avgKills), text: stats1985.runCount ? `${stats1985.avgKills.toFixed(1)}` : '—', color: RELICARIO_PALETTE.oldBone },
-                { label: '2026 · Director IA', count: stats2026.runCount, val: stats2026.avgKills, max: Math.max(40, stats1985.avgKills, stats2026.avgKills, statsHybrid.avgKills), text: stats2026.runCount ? `${stats2026.avgKills.toFixed(1)}` : '—', color: RELICARIO_PALETTE.vermilion },
-                { label: 'Híbrido 85×26', count: statsHybrid.runCount, val: statsHybrid.avgKills, max: Math.max(40, stats1985.avgKills, stats2026.avgKills, statsHybrid.avgKills), text: statsHybrid.runCount ? `${statsHybrid.avgKills.toFixed(1)}` : '—', color: RELICARIO_PALETTE.liturgicalGold }
+              ${buildVisualComparisonBlock('BAJAS MEDIAS EN CADA FASE', [
+                { label: 'F1 · 1985 (0–40s)', count: stats1985.runCount, val: stats1985.avgKills, max: Math.max(25, stats1985.avgKills, stats2026.avgKills, statsHybrid.avgKills), text: stats1985.runCount ? `${stats1985.avgKills.toFixed(1)}` : '—', color: RELICARIO_PALETTE.oldBone },
+                { label: 'F2 · Híbrido (40s–1:20)', count: statsHybrid.runCount, val: statsHybrid.avgKills, max: Math.max(25, stats1985.avgKills, stats2026.avgKills, statsHybrid.avgKills), text: statsHybrid.runCount ? `${statsHybrid.avgKills.toFixed(1)}` : '—', color: RELICARIO_PALETTE.liturgicalGold },
+                { label: 'F3 · IA 2026 (1:20–2:00)', count: stats2026.runCount, val: stats2026.avgKills, max: Math.max(25, stats1985.avgKills, stats2026.avgKills, statsHybrid.avgKills), text: stats2026.runCount ? `${stats2026.avgKills.toFixed(1)}` : '—', color: RELICARIO_PALETTE.vermilion }
               ])}
 
               <div class="stress-flow-box">
                 <div class="stress-flow-head">
-                  <span class="micro-mono-gold">ÍNDICE DE ESTRÉS MEDIO VS ZONA DE FLUJO (60–75%)</span>
+                  <span class="micro-mono-gold">ESTRÉS MEDIO POR FASE VS ZONA DE FLUJO (60–75%)</span>
                 </div>
-                ${buildStressFlowBar('1985', stats1985)}
-                ${buildStressFlowBar('2026', stats2026)}
-                ${buildStressFlowBar('HÍBR.', statsHybrid)}
+                ${buildStressFlowBar('F1·85', stats1985)}
+                ${buildStressFlowBar('F2·HÍB', statsHybrid)}
+                ${buildStressFlowBar('F3·IA', stats2026)}
               </div>
             </section>
 
@@ -428,7 +482,7 @@ export function mountDashboardView(root, { store, liveSync, audio, onReturnToSta
               <div class="qr-giant-top">
                 <span class="dash-kicker">SALA EN TIEMPO REAL: ${escapeHtml(syncState.roomCode)}</span>
                 <h2 id="qr-modal-title" class="qr-giant-title">ESCANEA PARA JUGAR EN DIRECTO</h2>
-                <p class="panel-subcopy">Al terminar tu ronda de 60 segundos, tu puntuación aparecerá automáticamente en el proyector</p>
+                <p class="panel-subcopy">Partida única de 2 minutos con 3 fases (1985 → Híbrido → IA Directora) y pausa de 5s entre rondas</p>
               </div>
               <div class="qr-giant-svg-wrap">
                 ${renderQrCodeSvg(syncState.publicUrl, { sizePx: 360, darkColor: '#080606', lightColor: '#F5EFE6', margin: 3 })}
@@ -584,7 +638,7 @@ export function mountDashboardView(root, { store, liveSync, audio, onReturnToSta
 function buildRealtimeToastHtml(toast) {
   const statusColor = toast.didSurvive ? RELICARIO_PALETTE.graceJade : RELICARIO_PALETTE.vermilion;
   const headline = toast.didSurvive
-    ? `¡${escapeHtml(toast.initials)} SOBREVIVIÓ LOS 60.0s!`
+    ? `¡${escapeHtml(toast.initials)} SOBREVIVIÓ LOS 2 MINUTOS!`
     : `${escapeHtml(toast.initials)} CAYÓ A LOS ${toast.survivedSeconds.toFixed(1)}s`;
 
   return `
@@ -603,9 +657,9 @@ function buildRealtimeToastHtml(toast) {
 }
 
 function buildActiveArenaRowHtml(p) {
-  const modeDef = GAME_MODE_MAP[p.mode] || GAME_MODE_MAP.director2026;
-  const elapsed = Math.min(60, Math.max(0, (Date.now() - p.startedAt) / 1000));
-  const pct = Math.min(100, (elapsed / 60) * 100);
+  const elapsed = Math.min(TOTAL_RUN_DURATION, Math.max(0, (Date.now() - p.startedAt) / 1000));
+  const pct = Math.min(100, (elapsed / TOTAL_RUN_DURATION) * 100);
+  const curPhase = getPhaseForElapsedTime(elapsed);
 
   return `
     <div class="active-arena-row" data-active-client="${escapeHtml(p.clientId)}">
@@ -613,21 +667,22 @@ function buildActiveArenaRowHtml(p) {
         <span class="active-arena-left">
           ${renderAvatarSVG(p.avatar, 24, true)}
           <strong>${escapeHtml(p.initials)}</strong>
-          <span class="mode-badge-xs" style="color:${modeDef.accentColor}; background:${modeDef.accentColor}26;">
-            ${escapeHtml(modeDef.shortBadge)}
+          <span class="mode-badge-xs active-arena-phase-badge" style="color:${curPhase.accentColor}; background:${curPhase.accentColor}26;">
+            F${curPhase.phaseNumber}·${escapeHtml(curPhase.shortBadge)}
           </span>
         </span>
-        <span class="active-arena-sec">${elapsed.toFixed(0)}s / 60s</span>
+        <span class="active-arena-sec">${elapsed.toFixed(0)}s / 120s</span>
       </div>
       <div class="active-arena-bar-track">
-        <div class="active-arena-bar-fill" style="width:${pct.toFixed(1)}%; background:${modeDef.accentColor};"></div>
+        <div class="active-arena-bar-fill" style="width:${pct.toFixed(1)}%; background:${curPhase.accentColor};"></div>
       </div>
     </div>
   `;
 }
 
 function buildLiveFeedItemHtml(rec) {
-  const modeDef = GAME_MODE_MAP[rec.mode] || GAME_MODE_MAP.director2026;
+  const reachedPhase = rec.reachedPhase || (rec.survivedSeconds >= 80 ? 3 : rec.survivedSeconds >= 40 ? 2 : 1);
+  const phaseDef = CAMPAIGN_PHASES[Math.min(2, Math.max(0, reachedPhase - 1))];
   const statusCol = rec.didSurvive ? RELICARIO_PALETTE.graceJade : RELICARIO_PALETTE.vermilion;
 
   return `
@@ -635,8 +690,8 @@ function buildLiveFeedItemHtml(rec) {
       <span class="live-feed-left">
         ${rec.avatar ? renderAvatarSVG(rec.avatar, 24, false) : ''}
         <strong class="live-feed-init">${escapeHtml(rec.initials)}</strong>
-        <span class="mode-badge-xs" style="color:${modeDef.accentColor}; background:${modeDef.accentColor}24;">
-          ${escapeHtml(modeDef.shortBadge)}
+        <span class="mode-badge-xs" style="color:${phaseDef.accentColor}; background:${phaseDef.accentColor}24;">
+          F${reachedPhase}·${escapeHtml(phaseDef.shortBadge)}
         </span>
       </span>
       <span class="live-feed-right">
@@ -745,14 +800,12 @@ function buildStressFlowBar(shortLabel, stats) {
 
 function buildLiveThesisConclusion(s85, s26, sHyb, total) {
   if (total === 0) {
-    return 'Escanea el código QR con los móviles de la clase o pulsa "⚡ Simular Partida" para ver cómo se construye en vivo la comparativa entre las reglas fijas de 1985 y el Director IA de 2026.';
+    return 'Escanea el código QR con los móviles de la clase o pulsa "⚡ Simular Partida" para ver en directo la evolución del jugador a través de las 3 fases (0–40s 1985, 40s–1m20s Híbrido y 1m20s–2m00s IA Directora).';
   }
-  if (s85.runCount > 0 && s26.runCount > 0) {
-    const diffSurv = Math.round(s26.survivalRatePercent - s85.survivalRatePercent);
-    const sign = diffSurv >= 0 ? `+${diffSurv}` : `${diffSurv}`;
-    return `Con ${total} partidas en vivo: el Director IA 2026 registra ${Math.round(s26.survivalRatePercent)}% de supervivencia (${sign} pp vs 1985) manteniendo un estrés medio de ${Math.round(s26.avgStress)}% y ${s26.avgSurvivedSeconds.toFixed(1)}s de aguante medio, frente a los ${s85.avgSurvivedSeconds.toFixed(1)}s del motor fijo de 1985.`;
+  if (s85.runCount > 0 && (sHyb.runCount > 0 || s26.runCount > 0)) {
+    return `Con ${total} partidas en vivo: el ${Math.round(s85.survivalRatePercent)}% supera la Fase 1 (1985, estrés ${Math.round(s85.avgStress)}%), el ${Math.round(sHyb.survivalRatePercent)}% supera la Fase 2 (Híbrido, estrés ${Math.round(sHyb.avgStress)}%) y en la Fase 3 el Director IA 2026 regula el estrés medio al ${Math.round(s26.avgStress)}% con un ${Math.round(s26.survivalRatePercent)}% de victoria final.`;
   }
-  return `Registradas ${total} partidas en vivo. Pide a varios alumnos que prueben tanto el Modo 1985 como el Modo 2026 para contrastar en directo la tasa de supervivencia y la curva de estrés.`;
+  return `Registradas ${total} partidas en vivo. Cada partida recorre las 3 fases progresivas de 40 segundos con una pausa de preparación de 5 segundos entre rondas.`;
 }
 
 function buildPopularAvatarsStrip(records) {

@@ -3,12 +3,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { GAME_MODES, PLAYER_AVATARS, stressTierFromIndex } from '../src/engine/constants.js';
+import {
+  CAMPAIGN_PHASES,
+  GAME_MODES,
+  PLAYER_AVATARS,
+  TOTAL_RUN_DURATION,
+  formatDurationClock,
+  getPhaseForElapsedTime,
+  stressTierFromIndex
+} from '../src/engine/constants.js';
 import {
   Adaptive2026Director,
   Classic1985Engine,
   HybridMixDirector,
   StressMetricsTracker,
+  UnifiedProgressiveDirector,
   createWaveDirector
 } from '../src/engine/aiDirector.js';
 import { TelemetryStore, normalizeInitials } from '../src/engine/telemetryStore.js';
@@ -18,7 +27,7 @@ test('Catálogo completo de 3 modos y 12 avatares con SVG válido', () => {
   assert.equal(GAME_MODES.length, 3);
   assert.deepEqual(
     GAME_MODES.map((m) => m.id),
-    ['classic1985', 'director2026', 'hybrid1985x2026']
+    ['classic1985', 'hybrid1985x2026', 'director2026']
   );
 
   assert.equal(PLAYER_AVATARS.length, 12);
@@ -67,15 +76,16 @@ test('StressMetricsTracker reacciona al peligro, trauma, giros bruscos y mantien
   assert.ok(tracker.currentStress < 35, `El estrés debería bajar a BAJO (<35), obtenido ${tracker.currentStress}`);
 });
 
-test('Invariante monotónico: ninguno de los 3 motores reduce dificultad aunque suba el estrés al máximo', () => {
-  for (const modeId of ['classic1985', 'director2026', 'hybrid1985x2026']) {
+test('Invariante monotónico: ninguno de los motores (incluyendo el Modo Unificado de 120s) reduce dificultad', () => {
+  for (const modeId of ['classic1985', 'director2026', 'hybrid1985x2026', 'unified']) {
     const director = createWaveDirector(modeId);
+    const maxSteps = modeId === 'unified' ? 1200 : 600;
 
     let prevInterval = Infinity;
     let prevMaxEnemies = 0;
     let prevSpeed = 0;
 
-    for (let step = 0; step <= 600; step++) {
+    for (let step = 0; step <= maxSteps; step++) {
       const t = step * 0.1;
       // Simulamos transición brusca: baja tensión al inicio, estrés crítico en el medio y calma al final
       const stress = t >= 15 && t <= 38 ? 94 : t >= 45 ? 15 : 50;
@@ -110,6 +120,62 @@ test('Invariante monotónico: ninguno de los 3 motores reduce dificultad aunque 
       prevSpeed = d.enemySpeedMultiplier;
     }
   }
+});
+
+test('Modo Unificado Progresivo de 2 minutos (3 fases): 0-40s 1985, 40-80s Híbrido, 80-120s IA Directora', () => {
+  assert.equal(TOTAL_RUN_DURATION, 120.0);
+  assert.equal(CAMPAIGN_PHASES.length, 3);
+  assert.equal(getPhaseForElapsedTime(0).id, 'classic1985');
+  assert.equal(getPhaseForElapsedTime(39.9).id, 'classic1985');
+  assert.equal(getPhaseForElapsedTime(40.0).id, 'hybrid1985x2026');
+  assert.equal(getPhaseForElapsedTime(79.9).id, 'hybrid1985x2026');
+  assert.equal(getPhaseForElapsedTime(80.0).id, 'director2026');
+  assert.equal(getPhaseForElapsedTime(120.0).id, 'director2026');
+  assert.equal(formatDurationClock(120), '2m 00s');
+  assert.equal(formatDurationClock(80), '1m 20s');
+
+  const unified = new UnifiedProgressiveDirector();
+  const d1 = unified.evaluate({
+    dt: 0.1,
+    elapsedTime: 10.0,
+    stressIndex: 50,
+    stressTier: stressTierFromIndex(50),
+    playerHPNormalized: 0.9,
+    playerVelocity: { dx: 100, dy: 0 },
+    activeEnemyCount: 15,
+    activeMedkitCount: 0
+  });
+  assert.equal(d1.phaseNumber, 1);
+  assert.equal(d1.phaseId, 'classic1985');
+  assert.ok(d1.microMessage.startsWith('FASE 1/3 ·'));
+
+  const d2 = unified.evaluate({
+    dt: 0.1,
+    elapsedTime: 55.0,
+    stressIndex: 65,
+    stressTier: stressTierFromIndex(65),
+    playerHPNormalized: 0.8,
+    playerVelocity: { dx: 100, dy: 0 },
+    activeEnemyCount: 30,
+    activeMedkitCount: 0
+  });
+  assert.equal(d2.phaseNumber, 2);
+  assert.equal(d2.phaseId, 'hybrid1985x2026');
+  assert.ok(d2.microMessage.startsWith('FASE 2/3 ·'));
+
+  const d3 = unified.evaluate({
+    dt: 0.1,
+    elapsedTime: 95.0,
+    stressIndex: 88,
+    stressTier: stressTierFromIndex(88),
+    playerHPNormalized: 0.3,
+    playerVelocity: { dx: 120, dy: 0 },
+    activeEnemyCount: 45,
+    activeMedkitCount: 0
+  });
+  assert.equal(d3.phaseNumber, 3);
+  assert.equal(d3.phaseId, 'director2026');
+  assert.ok(d3.microMessage.startsWith('FASE 3/3 ·'));
 });
 
 test('Comportamiento específico: 1985 botiquín fijo, 2026 corredor de escape, Híbrido ráfagas de reloj', () => {
@@ -168,7 +234,7 @@ test('Comportamiento específico: 1985 botiquín fijo, 2026 corredor de escape, 
   assert.equal(surgeDirective.isInterventionActive, true);
 });
 
-test('TelemetryStore: medias exactas, ránking por 6 criterios, perfiles y fusión JSON sin duplicados', () => {
+test('TelemetryStore: medias exactas, desglose por fases (phaseBreakdown), ránking y fusión JSON', () => {
   class MemoryStorage {
     constructor() { this.map = new Map(); }
     getItem(k) { return this.map.get(k) ?? null; }
@@ -185,34 +251,57 @@ test('TelemetryStore: medias exactas, ránking por 6 criterios, perfiles y fusi�
     id: 'run-1',
     initials: 'VLF',
     avatar: 'serafin',
-    mode: 'director2026',
-    survivedSeconds: 60,
+    mode: 'unified',
+    survivedSeconds: 120,
     didSurvive: true,
-    kills: 40,
-    averageStress: 55,
+    kills: 60,
+    averageStress: 62,
     peakStress: 88,
     medkitsCollected: 3,
+    reachedPhase: 3,
+    phaseBreakdown: {
+      classic1985: { entered: true, didSurvive: true, survivedSeconds: 40, kills: 16, averageStress: 55, peakStress: 70 },
+      hybrid1985x2026: { entered: true, didSurvive: true, survivedSeconds: 40, kills: 20, averageStress: 68, peakStress: 85 },
+      director2026: { entered: true, didSurvive: true, survivedSeconds: 40, kills: 24, averageStress: 63, peakStress: 88 }
+    },
     playedAt: '2026-11-17T10:00:00Z'
   });
   store.recordRun({
     id: 'run-2',
     initials: 'ana',
     avatar: 'cuervo',
-    mode: 'classic1985',
-    survivedSeconds: 30,
+    mode: 'unified',
+    survivedSeconds: 65,
     didSurvive: false,
-    kills: 15,
+    kills: 28,
     averageStress: 78,
     peakStress: 96,
     medkitsCollected: 1,
+    reachedPhase: 2,
+    phaseBreakdown: {
+      classic1985: { entered: true, didSurvive: true, survivedSeconds: 40, kills: 15, averageStress: 72, peakStress: 88 },
+      hybrid1985x2026: { entered: true, didSurvive: false, survivedSeconds: 25, kills: 13, averageStress: 84, peakStress: 96 },
+      director2026: { entered: false, didSurvive: false, survivedSeconds: 0, kills: 0, averageStress: 0, peakStress: 0 }
+    },
     playedAt: '2026-11-17T10:02:00Z'
   });
+
+  // Verificar agregación por fase desde phaseBreakdown
+  const s85 = store.stats('classic1985');
+  const sHyb = store.stats('hybrid1985x2026');
+  const s26 = store.stats('director2026');
+  assert.equal(s85.runCount, 2);
+  assert.equal(s85.survivalRatePercent, 100);
+  assert.equal(sHyb.runCount, 2);
+  assert.equal(sHyb.survivalRatePercent, 50);
+  assert.equal(s26.runCount, 1);
+  assert.equal(s26.survivalRatePercent, 100);
 
   const vlf = store.profile('VLF');
   assert.ok(vlf);
   assert.equal(vlf.favoriteAvatar, 'serafin');
-  // 60*10 + 40*12 + 100*2.5 = 600 + 480 + 250 = 1330
-  assert.equal(Math.round(vlf.rankingScore), 1330);
+  // 120*10 + 60*12 + 100*2.5 = 1200 + 720 + 250 = 2170
+  assert.equal(Math.round(vlf.rankingScore), 2170);
   assert.equal(store.globalRank('VLF'), 1);
   assert.equal(store.globalRank('ANA'), 2);
 
@@ -225,10 +314,10 @@ test('TelemetryStore: medias exactas, ránking por 6 criterios, perfiles y fusi�
     id: 'run-2', // duplicado intencionado
     initials: 'ANA',
     avatar: 'cuervo',
-    mode: 'classic1985',
-    survivedSeconds: 30,
+    mode: 'unified',
+    survivedSeconds: 65,
     didSurvive: false,
-    kills: 15,
+    kills: 28,
     averageStress: 78,
     peakStress: 96,
     medkitsCollected: 1,

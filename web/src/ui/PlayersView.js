@@ -1,6 +1,7 @@
 // Directorio de Jugadores, Ránking por Medias y Perfil Estadístico Individual
 
 import {
+  CAMPAIGN_PHASES,
   GAME_MODES,
   GAME_MODE_MAP,
   LEADERBOARD_SORT_METRICS,
@@ -11,7 +12,10 @@ import {
 import { renderAvatarSVG } from '../scene/avatarSVGs.js';
 import { escapeHtml, formatSpanishDate, medalColor } from './domUtils.js';
 
-export function mountPlayersView(root, { store, initialPlayerInitials = null, onReturnToStart, onUsePlayerSetup }) {
+export function mountPlayersView(
+  root,
+  { store, liveSync = null, initialPlayerInitials = null, onReturnToStart, onUsePlayerSetup }
+) {
   let selectedModeFilter = null;
   let sortMetric = 'overallRanking';
   let searchText = '';
@@ -64,14 +68,14 @@ export function mountPlayersView(root, { store, initialPlayerInitials = null, on
               ${searchText ? `<button type="button" id="btn-clear-search" class="btn-clear-input" aria-label="Limpiar búsqueda">✕</button>` : ''}
             </div>
 
-            <div class="chips-scroll" role="group" aria-label="Filtrar por motor de IA">
+            <div class="chips-scroll" role="group" aria-label="Filtrar por fase alcanzada">
               <button
                 type="button"
                 id="btn-filter-mode-all"
                 class="chip-btn ${selectedModeFilter === null ? 'is-selected' : ''}"
                 style="${selectedModeFilter === null ? `color:${RELICARIO_PALETTE.coldSilver}; border-color:${RELICARIO_PALETTE.coldSilver}; background:${RELICARIO_PALETTE.coldSilver}26;` : ''}"
-              >Todos</button>
-              ${GAME_MODES.map((m) => {
+              >Todas las fases</button>
+              ${CAMPAIGN_PHASES.map((m) => {
                 const isSel = selectedModeFilter === m.id;
                 return `
                   <button
@@ -80,7 +84,7 @@ export function mountPlayersView(root, { store, initialPlayerInitials = null, on
                     class="chip-btn filter-mode-chip ${isSel ? 'is-selected' : ''}"
                     data-mode="${m.id}"
                     style="${isSel ? `color:${m.accentColor}; border-color:${m.accentColor}; background:${m.accentColor}26;` : ''}"
-                  >${escapeHtml(m.tableHeader)}</button>
+                  >F${m.phaseNumber} · ${escapeHtml(m.tableHeader)}</button>
                 `;
               }).join('')}
             </div>
@@ -110,7 +114,7 @@ export function mountPlayersView(root, { store, initialPlayerInitials = null, on
                 <h2>Sin jugadores registrados todavía</h2>
                 <p class="panel-subcopy">${selectedModeFilter === null
                   ? 'Completa partidas con distintas iniciales para ver el listado de jugadores, sus medias y su perfil individual.'
-                  : 'Ningún jugador ha registrado partidas en este modo todavía.'}</p>
+                  : 'Ningún jugador ha alcanzado esta fase todavía.'}</p>
               </section>`
             : filtered.length === 0
               ? `<section class="panel empty-panel">
@@ -221,7 +225,7 @@ export function mountPlayersView(root, { store, initialPlayerInitials = null, on
                 </div>
                 <p class="panel-subcopy">
                   ${profile.runCount} ${profile.runCount === 1 ? 'partida registrada' : 'partidas registradas'} ·
-                  ${profile.survivedCount} ${profile.survivedCount === 1 ? 'supervivencia' : 'supervivencias'}
+                  ${profile.survivedCount} ${profile.survivedCount === 1 ? 'victoria (2m)' : 'victorias (2m)'}
                 </p>
                 <p class="profile-last-date">Última sesión: ${escapeHtml(formatSpanishDate(profile.lastPlayedAt))}</p>
               </div>
@@ -237,28 +241,28 @@ export function mountPlayersView(root, { store, initialPlayerInitials = null, on
             <div class="kpi-grid-2">
               ${kpiCardHtml('TIEMPO MEDIO', `${profile.avgSurvivedSeconds.toFixed(1)}s`, `Récord: ${profile.bestSurvivedSeconds.toFixed(1)}s`, RELICARIO_PALETTE.ivory)}
               ${kpiCardHtml('BAJAS MEDIAS', `${profile.avgKills.toFixed(1)}`, `Récord: ${profile.bestKills} bajas`, RELICARIO_PALETTE.coldSilver)}
-              ${kpiCardHtml('SUPERVIVENCIA 60s', `${Math.round(profile.survivalRatePercent)}%`, `${profile.survivedCount} de ${profile.runCount} rondas`, RELICARIO_PALETTE.graceJade)}
+              ${kpiCardHtml('SUPERVIVENCIA 2M', `${Math.round(profile.survivalRatePercent)}%`, `${profile.survivedCount} de ${profile.runCount} partidas`, RELICARIO_PALETTE.graceJade)}
               ${kpiCardHtml('PUNTUACIÓN MEDIA', `${Math.round(profile.rankingScore)} pts`, globalRank ? `Puesto #${globalRank} de la clase` : 'Sin clasificar', RELICARIO_PALETTE.liturgicalGold)}
               ${kpiCardHtml('ESTRÉS MEDIO', `${Math.round(profile.avgStress)}%`, `Pico medio: ${Math.round(profile.avgPeakStress)}%`, stressColor)}
               ${kpiCardHtml('CURAS MEDIAS', `${profile.avgMedkits.toFixed(1)}`, 'Botiquines por partida', RELICARIO_PALETTE.graceJade)}
             </div>
           </section>
 
-          <section class="panel" aria-label="Desglose por motor">
-            <h2 class="panel-label gold-label">DESGLOSE POR MOTOR (MEDIAS)</h2>
+          <section class="panel" aria-label="Desglose por fase">
+            <h2 class="panel-label gold-label">DESGLOSE POR FASE (MEDIAS)</h2>
             <div class="comparison-table" role="table">
               <div class="cmp-row cmp-header" role="row">
                 <span>MÉTRICA</span>
-                <span style="color:${RELICARIO_PALETTE.oldBone};">1985</span>
-                <span style="color:${RELICARIO_PALETTE.vermilion};">2026</span>
-                <span style="color:${RELICARIO_PALETTE.liturgicalGold};">HÍBR.</span>
+                <span style="color:${RELICARIO_PALETTE.oldBone};">F1·1985</span>
+                <span style="color:${RELICARIO_PALETTE.liturgicalGold};">F2·HÍBR.</span>
+                <span style="color:${RELICARIO_PALETTE.vermilion};">F3·2026</span>
               </div>
-              ${modeRow('Partidas', `${m1985.runCount}`, `${m2026.runCount}`, `${mHybrid.runCount}`)}
-              ${modeRow('Superv. 60s', fmtPct(m1985, m1985.survivalRatePercent), fmtPct(m2026, m2026.survivalRatePercent), fmtPct(mHybrid, mHybrid.survivalRatePercent))}
-              ${modeRow('Tiempo medio', fmtSec(m1985, m1985.avgSurvivedSeconds), fmtSec(m2026, m2026.avgSurvivedSeconds), fmtSec(mHybrid, mHybrid.avgSurvivedSeconds))}
-              ${modeRow('Bajas medias', fmtNum(m1985, m1985.avgKills), fmtNum(m2026, m2026.avgKills), fmtNum(mHybrid, mHybrid.avgKills))}
-              ${modeRow('Estrés medio', fmtPct(m1985, m1985.avgStress), fmtPct(m2026, m2026.avgStress), fmtPct(mHybrid, mHybrid.avgStress))}
-              ${modeRow('Estrés pico', fmtPct(m1985, m1985.avgPeakStress), fmtPct(m2026, m2026.avgPeakStress), fmtPct(mHybrid, mHybrid.avgPeakStress))}
+              ${modeRow('Incursiones', `${m1985.runCount}`, `${mHybrid.runCount}`, `${m2026.runCount}`)}
+              ${modeRow('Fase superada', fmtPct(m1985, m1985.survivalRatePercent), fmtPct(mHybrid, mHybrid.survivalRatePercent), fmtPct(m2026, m2026.survivalRatePercent))}
+              ${modeRow('Tiempo medio', fmtSec(m1985, m1985.avgSurvivedSeconds), fmtSec(mHybrid, mHybrid.avgSurvivedSeconds), fmtSec(m2026, m2026.avgSurvivedSeconds))}
+              ${modeRow('Bajas medias', fmtNum(m1985, m1985.avgKills), fmtNum(mHybrid, mHybrid.avgKills), fmtNum(m2026, m2026.avgKills))}
+              ${modeRow('Estrés medio', fmtPct(m1985, m1985.avgStress), fmtPct(mHybrid, mHybrid.avgStress), fmtPct(m2026, m2026.avgStress))}
+              ${modeRow('Estrés pico', fmtPct(m1985, m1985.avgPeakStress), fmtPct(mHybrid, mHybrid.avgPeakStress), fmtPct(m2026, m2026.avgPeakStress))}
             </div>
           </section>
 
@@ -402,19 +406,20 @@ function kpiCardHtml(title, value, subtitle, color) {
   `;
 }
 
-function modeRow(label, v85, v26, vHyb) {
+function modeRow(label, v85, vHyb, v26) {
   return `
     <div class="cmp-row" role="row">
       <span class="cmp-label">${escapeHtml(label)}</span>
       <span class="cmp-num" style="color:${RELICARIO_PALETTE.oldBone};">${escapeHtml(v85)}</span>
-      <span class="cmp-num" style="color:${RELICARIO_PALETTE.ivory};">${escapeHtml(v26)}</span>
       <span class="cmp-num" style="color:${RELICARIO_PALETTE.liturgicalGold};">${escapeHtml(vHyb)}</span>
+      <span class="cmp-num" style="color:${RELICARIO_PALETTE.ivory};">${escapeHtml(v26)}</span>
     </div>
   `;
 }
 
 function buildPlayerRunCardHtml(rec) {
-  const modeDef = GAME_MODE_MAP[rec.mode] || GAME_MODE_MAP.director2026;
+  const reachedPhase = rec.reachedPhase || (rec.survivedSeconds >= 80 ? 3 : rec.survivedSeconds >= 40 ? 2 : 1);
+  const phaseDef = CAMPAIGN_PHASES[Math.min(2, Math.max(0, reachedPhase - 1))];
   const statusCol = rec.didSurvive ? RELICARIO_PALETTE.graceJade : RELICARIO_PALETTE.vermilion;
   const stressCol = stressTierFromIndex(rec.averageStress).color;
 
@@ -423,8 +428,8 @@ function buildPlayerRunCardHtml(rec) {
       <div class="player-run-top">
         <div class="player-run-badges">
           ${rec.avatar ? renderAvatarSVG(rec.avatar, 22, false) : ''}
-          <span class="mode-badge-sm" style="color:${modeDef.accentColor}; background:${modeDef.accentColor}26;">${escapeHtml(modeDef.shortBadge)}</span>
-          <span class="run-status-tag" style="color:${statusCol};">${rec.didSurvive ? 'COMPLETADA' : 'CAÍDA'}</span>
+          <span class="mode-badge-sm" style="color:${phaseDef.accentColor}; background:${phaseDef.accentColor}26;">F${reachedPhase}·${escapeHtml(phaseDef.shortBadge)}</span>
+          <span class="run-status-tag" style="color:${statusCol};">${rec.didSurvive ? 'VICTORIA 2:00' : 'CAÍDA'}</span>
         </div>
         <span class="run-date-label">${escapeHtml(formatSpanishDate(rec.playedAt))}</span>
       </div>

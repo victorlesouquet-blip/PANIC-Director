@@ -1,6 +1,6 @@
 // Vista de Resultados, Telemetría Comparativa de Clase (1985 vs 2026 vs Híbrido) y Unificación JSON
 
-import { GAME_MODE_MAP, RELICARIO_PALETTE, stressTierFromIndex } from '../engine/constants.js';
+import { CAMPAIGN_PHASES, GAME_MODE_MAP, RELICARIO_PALETTE, stressTierFromIndex } from '../engine/constants.js';
 import { renderAvatarSVG } from '../scene/avatarSVGs.js';
 import { escapeHtml } from './domUtils.js';
 
@@ -16,7 +16,10 @@ function formatStatNum(stats, val) {
   return stats.runCount > 0 ? `${val.toFixed(1)}` : '—';
 }
 
-export function mountResultsView(root, { lastRecord, store, roomCode = 'CLASE', onPlayAgain, onReturnToStart, onOpenPlayers, onOpenDashboard }) {
+export function mountResultsView(
+  root,
+  { lastRecord, store, liveSync = null, roomCode = 'CLASE', onPlayAgain, onReturnToStart, onOpenPlayers, onOpenDashboard }
+) {
   let syncNotice = '';
   let syncError = false;
   let pasteDrawerOpen = false;
@@ -34,7 +37,7 @@ export function mountResultsView(root, { lastRecord, store, roomCode = 'CLASE', 
         <header class="panel telemetry-head-card">
           <div>
             <h1 class="telemetry-title">TELEMETRÍA DE CLASE</h1>
-            <p class="panel-subcopy">Sala en vivo: <strong>${escapeHtml(roomCode)}</strong> · Comparativa acumulada</p>
+            <p class="panel-subcopy">Sala en vivo: <strong>${escapeHtml(roomCode)}</strong> · Campaña 2 Min (3 Fases)</p>
           </div>
           <span class="pill-badge-cyan">${totalCount} REG.</span>
         </header>
@@ -65,25 +68,25 @@ export function mountResultsView(root, { lastRecord, store, roomCode = 'CLASE', 
             <span class="chevron-right">›</span>
           </button>
 
-          <section class="panel" aria-label="Comparativa entre los 3 motores de IA">
+          <section class="panel" aria-label="Comparativa entre las 3 fases de IA">
             <div class="panel-head">
-              <h2 class="panel-label gold-label">COMPARATIVA 1985 · 2026 · HÍBR.</h2>
+              <h2 class="panel-label gold-label">COMPARATIVA POR FASE · 1985 · HÍBR. · 2026</h2>
               <span class="micro-mono-muted">EN VIVO</span>
             </div>
 
             <div class="comparison-table" role="table" aria-label="Tabla comparativa de motores">
               <div class="cmp-row cmp-header" role="row">
                 <span role="columnheader">MÉTRICA</span>
-                <span role="columnheader" style="color:${RELICARIO_PALETTE.oldBone};">1985</span>
-                <span role="columnheader" style="color:${RELICARIO_PALETTE.vermilion};">2026</span>
-                <span role="columnheader" style="color:${RELICARIO_PALETTE.liturgicalGold};">HÍBR.</span>
+                <span role="columnheader" style="color:${RELICARIO_PALETTE.oldBone};">F1·1985</span>
+                <span role="columnheader" style="color:${RELICARIO_PALETTE.liturgicalGold};">F2·HÍBR.</span>
+                <span role="columnheader" style="color:${RELICARIO_PALETTE.vermilion};">F3·2026</span>
               </div>
-              ${comparisonRow('Partidas', `${stats1985.runCount}`, `${stats2026.runCount}`, `${statsHybrid.runCount}`)}
-              ${comparisonRow('Superv. 60s', formatStatPct(stats1985, stats1985.survivalRatePercent), formatStatPct(stats2026, stats2026.survivalRatePercent), formatStatPct(statsHybrid, statsHybrid.survivalRatePercent))}
-              ${comparisonRow('Tiempo medio', formatStatSec(stats1985, stats1985.avgSurvivedSeconds), formatStatSec(stats2026, stats2026.avgSurvivedSeconds), formatStatSec(statsHybrid, statsHybrid.avgSurvivedSeconds))}
-              ${comparisonRow('Bajas medias', formatStatNum(stats1985, stats1985.avgKills), formatStatNum(stats2026, stats2026.avgKills), formatStatNum(statsHybrid, statsHybrid.avgKills))}
-              ${comparisonRow('Estrés medio', formatStatPct(stats1985, stats1985.avgStress), formatStatPct(stats2026, stats2026.avgStress), formatStatPct(statsHybrid, statsHybrid.avgStress))}
-              ${comparisonRow('Estrés pico', formatStatPct(stats1985, stats1985.avgPeakStress), formatStatPct(stats2026, stats2026.avgPeakStress), formatStatPct(statsHybrid, statsHybrid.avgPeakStress))}
+              ${comparisonRow('Incursiones', `${stats1985.runCount}`, `${statsHybrid.runCount}`, `${stats2026.runCount}`)}
+              ${comparisonRow('Fase superada', formatStatPct(stats1985, stats1985.survivalRatePercent), formatStatPct(statsHybrid, statsHybrid.survivalRatePercent), formatStatPct(stats2026, stats2026.survivalRatePercent))}
+              ${comparisonRow('Tiempo medio', formatStatSec(stats1985, stats1985.avgSurvivedSeconds), formatStatSec(statsHybrid, statsHybrid.avgSurvivedSeconds), formatStatSec(stats2026, stats2026.avgSurvivedSeconds))}
+              ${comparisonRow('Bajas medias', formatStatNum(stats1985, stats1985.avgKills), formatStatNum(statsHybrid, statsHybrid.avgKills), formatStatNum(stats2026, stats2026.avgKills))}
+              ${comparisonRow('Estrés medio', formatStatPct(stats1985, stats1985.avgStress), formatStatPct(statsHybrid, statsHybrid.avgStress), formatStatPct(stats2026, stats2026.avgStress))}
+              ${comparisonRow('Estrés pico', formatStatPct(stats1985, stats1985.avgPeakStress), formatStatPct(statsHybrid, statsHybrid.avgPeakStress), formatStatPct(stats2026, stats2026.avgPeakStress))}
             </div>
           </section>
 
@@ -98,7 +101,7 @@ export function mountResultsView(root, { lastRecord, store, roomCode = 'CLASE', 
               <span class="micro-mono-cyan">MULTI-DISPOSITIVO</span>
             </div>
             <p class="panel-subcopy">
-              Cada dispositivo guarda sus partidas localmente. Exporta tu JSON o importa el de un compañero para fusionar el ránking sin duplicados.
+              Además de la sincronización en directo por sala, puedes exportar o fusionar manualmente un archivo JSON.
             </p>
             <div class="sync-actions-grid">
               <button type="button" id="btn-copy-json" class="btn-sync">Copiar mi JSON</button>
@@ -126,7 +129,7 @@ export function mountResultsView(root, { lastRecord, store, roomCode = 'CLASE', 
             </div>
 
             ${totalCount === 0
-              ? `<p class="empty-copy">Todavía no hay partidas guardadas. Juega una ronda de 60 segundos para registrar datos.</p>`
+              ? `<p class="empty-copy">Todavía no hay partidas guardadas. Juega una partida de 2 minutos (3 fases) para registrar datos.</p>`
               : `<div class="history-list">
                   ${store.records.map((rec) => buildHistoryRowHtml(rec)).join('')}
                 </div>`
@@ -136,7 +139,7 @@ export function mountResultsView(root, { lastRecord, store, roomCode = 'CLASE', 
 
         <footer class="sticky-bottom-bar">
           <button type="button" id="btn-change-player" class="btn-footer-secondary">CAMBIAR JUGADOR</button>
-          ${lastRecord ? `<button type="button" id="btn-play-again" class="btn-footer-primary">REPETIR (60s)</button>` : ''}
+          ${lastRecord ? `<button type="button" id="btn-play-again" class="btn-footer-primary">REPETIR (2 MIN)</button>` : ''}
         </footer>
 
         ${confirmResetOpen ? `
@@ -294,9 +297,28 @@ export function mountResultsView(root, { lastRecord, store, roomCode = 'CLASE', 
 }
 
 function buildRunSummaryHtml(rec, roomCode = 'CLASE') {
-  const modeDef = GAME_MODE_MAP[rec.mode] || GAME_MODE_MAP.director2026;
+  const modeDef = GAME_MODE_MAP[rec.mode] || GAME_MODE_MAP.unified;
   const statusColor = rec.didSurvive ? RELICARIO_PALETTE.graceJade : RELICARIO_PALETTE.vermilion;
   const stressColor = stressTierFromIndex(rec.averageStress).color;
+  const reachedPhase = rec.reachedPhase || (rec.survivedSeconds >= 80 ? 3 : rec.survivedSeconds >= 40 ? 2 : 1);
+
+  const phaseBreakdownHtml = rec.phaseBreakdown
+    ? `
+      <div class="run-phases-mini-grid">
+        ${CAMPAIGN_PHASES.map((ph) => {
+          const st = rec.phaseBreakdown[ph.id];
+          const entered = st?.entered;
+          return `
+            <div class="run-phase-mini-card" style="border-color:${entered ? ph.accentColor : 'rgba(255,255,255,0.12)'}; opacity:${entered ? '1' : '0.48'};">
+              <span class="run-phase-mini-hdr" style="color:${ph.accentColor};">F${ph.phaseNumber} · ${escapeHtml(ph.shortBadge)}</span>
+              <strong class="run-phase-mini-val">${entered ? `${Number(st.survivedSeconds).toFixed(1)}s · ${st.kills}B` : 'No alcanzada'}</strong>
+              <span class="run-phase-mini-sub">${entered ? `Estrés ${Math.round(st.averageStress)}%` : escapeHtml(ph.windowLabel)}</span>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `
+    : '';
 
   return `
     <section class="panel" style="border-color:${statusColor}8C;" aria-label="Resumen de última partida">
@@ -307,15 +329,15 @@ function buildRunSummaryHtml(rec, roomCode = 'CLASE') {
             <span>${escapeHtml(rec.initials)}</span>
             <span class="mini-icon">☺</span>
           </button>
-          <span class="run-mode-label" style="color:${modeDef.accentColor};">${escapeHtml(modeDef.displayTitle)}</span>
+          <span class="run-mode-label" style="color:${modeDef.accentColor};">FASE ${reachedPhase}/3 ALCANZADA</span>
         </div>
         <span class="status-pill" style="color:${statusColor}; background:${statusColor}2E;">
-          ${rec.didSurvive ? 'COMPLETADA' : 'DERROTA'}
+          ${rec.didSurvive ? 'VICTORIA 2:00' : `FASE ${reachedPhase}`}
         </span>
       </div>
 
       <h1 class="result-headline" style="color:${statusColor};">
-        ${rec.didSurvive ? '¡SOBREVIVISTE LOS 60s!' : `CAÍDO A LOS ${rec.survivedSeconds.toFixed(1)}s`}
+        ${rec.didSurvive ? '¡SOBREVIVISTE LOS 2 MINUTOS!' : `CAÍDO A LOS ${rec.survivedSeconds.toFixed(1)}s`}
       </h1>
 
       <div class="kpi-strip-4">
@@ -324,6 +346,8 @@ function buildRunSummaryHtml(rec, roomCode = 'CLASE') {
         ${metricPillHtml('ESTRÉS MEDIO', `${Math.round(rec.averageStress)}%`, stressColor)}
         ${metricPillHtml('CURAS', `${rec.medkitsCollected || 0}`, RELICARIO_PALETTE.graceJade)}
       </div>
+
+      ${phaseBreakdownHtml}
 
       <div class="run-live-synced-note">
         <span class="pulse-dot"></span>
@@ -343,19 +367,20 @@ function metricPillHtml(label, value, color) {
   `;
 }
 
-function comparisonRow(label, val1985, val2026, valHybrid) {
+function comparisonRow(label, val1985, valHybrid, val2026) {
   return `
     <div class="cmp-row" role="row">
       <span role="cell" class="cmp-label">${escapeHtml(label)}</span>
       <span role="cell" class="cmp-num" style="color:${RELICARIO_PALETTE.oldBone};">${escapeHtml(val1985)}</span>
-      <span role="cell" class="cmp-num" style="color:${RELICARIO_PALETTE.ivory};">${escapeHtml(val2026)}</span>
       <span role="cell" class="cmp-num" style="color:${RELICARIO_PALETTE.liturgicalGold};">${escapeHtml(valHybrid)}</span>
+      <span role="cell" class="cmp-num" style="color:${RELICARIO_PALETTE.ivory};">${escapeHtml(val2026)}</span>
     </div>
   `;
 }
 
 function buildHistoryRowHtml(rec) {
-  const modeDef = GAME_MODE_MAP[rec.mode] || GAME_MODE_MAP.director2026;
+  const reachedPhase = rec.reachedPhase || (rec.survivedSeconds >= 80 ? 3 : rec.survivedSeconds >= 40 ? 2 : 1);
+  const phaseDef = CAMPAIGN_PHASES[Math.min(2, Math.max(0, reachedPhase - 1))];
   const timeColor = rec.didSurvive ? RELICARIO_PALETTE.graceJade : RELICARIO_PALETTE.vermilion;
   const stressColor = stressTierFromIndex(rec.averageStress).color;
 
@@ -364,8 +389,8 @@ function buildHistoryRowHtml(rec) {
       <span class="hist-left">
         ${rec.avatar ? renderAvatarSVG(rec.avatar, 22, false) : `<span class="monogram-dot">·</span>`}
         <strong class="hist-initials">${escapeHtml(rec.initials)}</strong>
-        <span class="mode-badge-sm" style="color:${modeDef.accentColor}; background:${modeDef.accentColor}26;">
-          ${escapeHtml(modeDef.shortBadge)}
+        <span class="mode-badge-sm" style="color:${phaseDef.accentColor}; background:${phaseDef.accentColor}26;">
+          F${reachedPhase}·${escapeHtml(phaseDef.shortBadge)}
         </span>
       </span>
       <span class="hist-right">
@@ -379,17 +404,8 @@ function buildHistoryRowHtml(rec) {
 }
 
 function buildClassInsightText(stats1985, stats2026, statsHybrid, totalCount) {
-  if (stats1985.runCount > 0 && stats2026.runCount > 0) {
-    const delta = stats2026.survivalRatePercent - stats1985.survivalRatePercent;
-    const sign = delta >= 0 ? '+' : '';
-    const base = `Con ${totalCount} partidas: el Modo 2026 logra ${sign}${Math.round(delta)} pp en supervivencia con ${Math.round(stats2026.avgStress)}% de estrés medio frente al ${Math.round(stats1985.avgStress)}% del Modo 1985.`;
-    if (statsHybrid.runCount > 0) {
-      return `${base} En Híbrido (${Math.round(statsHybrid.survivalRatePercent)}% superv., ${Math.round(statsHybrid.avgStress)}% estrés) la mezcla eleva el castigo.`;
-    }
-    return base;
+  if (stats1985.runCount > 0 && (statsHybrid.runCount > 0 || stats2026.runCount > 0)) {
+    return `Con ${totalCount} partidas registradas: la Fase 1 (1985) se supera el ${Math.round(stats1985.survivalRatePercent)}% de las veces (${Math.round(stats1985.avgStress)}% estrés), la Fase 2 (Híbrido) el ${Math.round(statsHybrid.survivalRatePercent)}% (${Math.round(statsHybrid.avgStress)}% estrés) y la Fase 3 (IA Directora) el ${Math.round(stats2026.survivalRatePercent)}% (${Math.round(stats2026.avgStress)}% estrés).`;
   }
-  if (statsHybrid.runCount > 0 && (stats1985.runCount > 0 || stats2026.runCount > 0)) {
-    return `El Modo Híbrido registra ${Math.round(statsHybrid.survivalRatePercent)}% de supervivencia y ${Math.round(statsHybrid.avgStress)}% de estrés medio (${statsHybrid.runCount} partidas). Completa pruebas en los 3 motores para la comparativa completa.`;
-  }
-  return 'Registra partidas en los modos 1985, 2026 e Híbrido con varios compañeros para proyectar la comparativa real en clase.';
+  return 'Cada partida de 2 minutos atraviesa las 3 fases (0-40s Modo 1985, 40s-1m20s Híbrido y 1m20s-2m00s IA Directora) y alimenta automáticamente esta comparativa.';
 }

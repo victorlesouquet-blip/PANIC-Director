@@ -1,4 +1,4 @@
-// Paleta Relicario de Ceniza y Carmesí + Catálogo exacto de Modos, Avatares y Niveles de Estrés
+// Paleta Relicario de Ceniza y Carmesí + Configuración del Modo Unificado de 2 Minutos (3 Fases de 40s)
 
 export const RELICARIO_PALETTE = {
   arenaBG: '#110E0E',
@@ -20,34 +20,99 @@ export const RELICARIO_PALETTE = {
   emberOrange: '#FF6B2B'
 };
 
-export const GAME_MODES = [
+export const TOTAL_RUN_DURATION = 120.0;
+export const PHASE_DURATION = 40.0;
+export const PHASE_TRANSITION_DURATION = 5.0;
+
+// Los 3 tramos temporales progresivos de la partida unificada de 2 minutos (0-40s, 40-80s, 80-120s)
+export const CAMPAIGN_PHASES = [
   {
     id: 'classic1985',
-    displayTitle: 'Modo 1985 (Clásico)',
-    shortBadge: '1985 · FIJO',
-    tableHeader: '1985',
-    subtitle: 'Reglas fijas y oleadas implacables que ignoran al jugador',
+    phaseNumber: 1,
+    startSec: 0,
+    endSec: 40,
+    durationSec: 40,
+    rangeLabel: '0s – 40s',
+    clockRangeLabel: '0:00 – 0:40',
+    displayTitle: 'Fase 1 · Modo 1985 (Reglas Fijas)',
+    shortBadge: 'F1 · 1985 (0-40s)',
+    hudBadge: 'FASE 1/3 · 1985 FIJO',
+    tableHeader: 'F1 · 1985',
+    subtitle: 'Tramo 0s–40s: escalada matemática fija y botiquín programado por reloj',
+    transitionKicker: 'TRAMO INICIAL · 0s A 40s',
+    transitionHeadline: 'FASE 1: MODO 1985 (CLÁSICO)',
+    transitionDescription: 'Las criaturas aparecen siguiendo una fórmula fija por segundo, sin importar tu vida ni tu estrés.',
     accentColor: RELICARIO_PALETTE.oldBone
   },
   {
-    id: 'director2026',
-    displayTitle: 'Modo 2026 (IA Directora)',
-    shortBadge: '2026 · IA',
-    tableHeader: '2026',
-    subtitle: 'IA Directora que mide tu estrés en vivo y moldea la partida',
-    accentColor: RELICARIO_PALETTE.vermilion
+    id: 'hybrid1985x2026',
+    phaseNumber: 2,
+    startSec: 40,
+    endSec: 80,
+    durationSec: 40,
+    rangeLabel: '40s – 1m20s',
+    clockRangeLabel: '0:40 – 1:20',
+    displayTitle: 'Fase 2 · Modo Híbrido (1985 × 2026)',
+    shortBadge: 'F2 · HÍBRIDO (40s-1m20s)',
+    hudBadge: 'FASE 2/3 · HÍBRIDO',
+    tableHeader: 'F2 · HÍBR.',
+    subtitle: 'Tramo 40s–1m20s: incremento de dificultad con ráfagas de reloj + lectura de estrés',
+    transitionKicker: '¡FASE 1 SUPERADA! · INCREMENTO DE DIFICULTAD (40s – 1m20s)',
+    transitionHeadline: 'FASE 2: MODO HÍBRIDO (1985 × 2026)',
+    transitionDescription: 'La horda acelera y lanza ráfagas de asedio por reloj, mientras un sistema híbrido empieza a reaccionar a tu Índice de Estrés.',
+    accentColor: RELICARIO_PALETTE.liturgicalGold
   },
   {
-    id: 'hybrid1985x2026',
-    displayTitle: 'Modo Híbrido (1985 × 2026)',
-    shortBadge: '85 × 26 · MIX',
-    tableHeader: 'HÍBR.',
-    subtitle: 'Oleadas fijas y ráfagas de reloj 1985 mutadas por la IA Directora 2026',
-    accentColor: RELICARIO_PALETTE.liturgicalGold
+    id: 'director2026',
+    phaseNumber: 3,
+    startSec: 80,
+    endSec: 120,
+    durationSec: 40,
+    rangeLabel: '1m20s – 2m00s',
+    clockRangeLabel: '1:20 – 2:00',
+    displayTitle: 'Fase 3 · Modo IA Directora (2026)',
+    shortBadge: 'F3 · IA 2026 (1m20s-2m)',
+    hudBadge: 'FASE 3/3 · IA DIRECTORA',
+    tableHeader: 'F3 · IA 2026',
+    subtitle: 'Tramo 1m20s–2m00s: clímax adaptativo que moldea brechas y curas según tu estrés en vivo',
+    transitionKicker: '¡FASE 2 SUPERADA! · CLÍMAX FINAL (1m20s – 2m00s)',
+    transitionHeadline: 'FASE 3: IA DIRECTORA 2026',
+    transitionDescription: 'Presión máxima. La IA Directora lee tu estrés en tiempo real: abrirá corredores de escape y enviará Gotas de Gracia tácticas cuando estés al límite.',
+    accentColor: RELICARIO_PALETTE.vermilion
   }
 ];
 
-export const GAME_MODE_MAP = Object.fromEntries(GAME_MODES.map((m) => [m.id, m]));
+export const GAME_MODES = CAMPAIGN_PHASES;
+
+export const GAME_MODE_MAP = {
+  ...Object.fromEntries(CAMPAIGN_PHASES.map((m) => [m.id, m])),
+  unified: {
+    id: 'unified',
+    displayTitle: 'Campaña Unificada (1985 → Híbrido → IA 2026)',
+    shortBadge: '3 FASES · 2 MIN',
+    tableHeader: '2 MIN',
+    subtitle: '0-40s Modo 1985 · 40s-1m20s Híbrido · 1m20s-2m IA Directora',
+    accentColor: RELICARIO_PALETTE.vermilion
+  }
+};
+
+export function getPhaseForElapsedTime(elapsedSeconds) {
+  const t = Math.max(0, Number(elapsedSeconds) || 0);
+  if (t < 40.0) return CAMPAIGN_PHASES[0];
+  if (t < 80.0) return CAMPAIGN_PHASES[1];
+  return CAMPAIGN_PHASES[2];
+}
+
+export function formatDurationClock(seconds) {
+  const s = Math.max(0, Number(seconds) || 0);
+  const mins = Math.floor(s / 60);
+  const rem = s - mins * 60;
+  if (mins > 0) {
+    const wholeSec = Math.floor(rem);
+    return `${mins}m ${String(wholeSec).padStart(2, '0')}s`;
+  }
+  return `${s.toFixed(1)}s`;
+}
 
 export const PLAYER_AVATARS = [
   {

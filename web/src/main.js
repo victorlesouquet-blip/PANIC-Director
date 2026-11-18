@@ -65,10 +65,7 @@ const appState = {
     Array.isArray(savedPrefs?.initialsChars) && savedPrefs.initialsChars.length === 3
       ? savedPrefs.initialsChars
       : ['V', 'L', 'F'],
-  selectedMode:
-    savedPrefs?.selectedMode && GAME_MODE_MAP[savedPrefs.selectedMode]
-      ? savedPrefs.selectedMode
-      : 'director2026',
+  selectedMode: 'unified',
   selectedAvatar:
     savedPrefs?.selectedAvatar && PLAYER_AVATAR_MAP[savedPrefs.selectedAvatar]
       ? savedPrefs.selectedAvatar
@@ -115,7 +112,7 @@ function startRunWithLivePresence() {
   liveSync.publishRunStart({
     initials,
     avatar: appState.selectedAvatar,
-    mode: appState.selectedMode
+    mode: 'unified'
   });
   navigate('game');
 }
@@ -130,7 +127,7 @@ function renderApp() {
     document.body.classList.add('in-game');
     activeCleanup = mountGameView(rootEl, {
       initials: normalizeInitials(appState.initialsChars.join('')),
-      modeId: appState.selectedMode,
+      modeId: 'unified',
       avatarId: appState.selectedAvatar,
       audio,
       onFinishRun: (record) => {
