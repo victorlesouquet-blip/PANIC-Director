@@ -130,6 +130,9 @@ function renderApp() {
       modeId: 'unified',
       avatarId: appState.selectedAvatar,
       audio,
+      onProgressRun: (progress) => {
+        liveSync.updateRunProgress(progress);
+      },
       onFinishRun: (record) => {
         const saved = store.recordRun(record);
         appState.lastRecord = saved;

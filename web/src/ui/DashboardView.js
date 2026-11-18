@@ -38,6 +38,7 @@ export function mountDashboardView(root, { store, liveSync, audio, onReturnToSta
   let roomEditorOpen = false;
   let confirmResetOpen = false;
   let copyFeedback = '';
+  let syncFeedback = '';
   let activeToast = null;
   let toastTimeout = null;
 
@@ -98,7 +99,8 @@ export function mountDashboardView(root, { store, liveSync, audio, onReturnToSta
         const secEl = rowEl.querySelector('.active-arena-sec');
         const fillEl = rowEl.querySelector('.active-arena-bar-fill');
         const badgeEl = rowEl.querySelector('.active-arena-phase-badge');
-        if (secEl) secEl.textContent = `${elapsed.toFixed(0)}s / 120s`;
+        const killsTag = p.kills > 0 ? `${p.kills}B · ` : '';
+        if (secEl) secEl.textContent = `${killsTag}${elapsed.toFixed(0)}s / 120s`;
         if (fillEl) {
           fillEl.style.width = `${pct.toFixed(1)}%`;
           fillEl.style.background = curPhase.accentColor;
@@ -261,6 +263,9 @@ export function mountDashboardView(root, { store, liveSync, audio, onReturnToSta
 
             <button type="button" id="btn-expand-qr" class="btn-dash-action btn-dash-gold">
               ⛶ AMPLIAR QR
+            </button>
+            <button type="button" id="btn-sync-now" class="btn-dash-action btn-dash-cyan" title="Sincronizar jugadores en curso y partidas recientes ahora mismo">
+              ${syncFeedback ? escapeHtml(syncFeedback) : '🔄 SINCRONIZAR'}
             </button>
             <button type="button" id="btn-simulate-run" class="btn-dash-action btn-dash-cyan" title="Añade una partida de prueba de 3 fases en tiempo real">
               ⚡ SIMULAR PARTIDA
@@ -597,6 +602,18 @@ export function mountDashboardView(root, { store, liveSync, audio, onReturnToSta
       if (e.key === 'Enter') applyRoomChange();
     });
 
+    root.querySelector('#btn-sync-now')?.addEventListener('click', async () => {
+      syncFeedback = '⟳ SINCRONIZANDO...';
+      render();
+      await liveSync.forceSyncNow();
+      syncFeedback = '✓ SINCRONIZADO';
+      render();
+      setTimeout(() => {
+        syncFeedback = '';
+        render();
+      }, 2200);
+    });
+
     root.querySelector('#btn-simulate-run')?.addEventListener('click', () => {
       simulateClassRun();
     });
@@ -673,6 +690,7 @@ function buildActiveArenaRowHtml(p) {
   const elapsed = Math.min(TOTAL_RUN_DURATION, Math.max(0, (Date.now() - p.startedAt) / 1000));
   const pct = Math.min(100, (elapsed / TOTAL_RUN_DURATION) * 100);
   const curPhase = getPhaseForElapsedTime(elapsed);
+  const killsTag = p.kills > 0 ? `${p.kills}B · ` : '';
 
   return `
     <div class="active-arena-row" data-active-client="${escapeHtml(p.clientId)}">
@@ -684,7 +702,7 @@ function buildActiveArenaRowHtml(p) {
             F${curPhase.phaseNumber}·${escapeHtml(curPhase.shortBadge)}
           </span>
         </span>
-        <span class="active-arena-sec">${elapsed.toFixed(0)}s / 120s</span>
+        <span class="active-arena-sec">${killsTag}${elapsed.toFixed(0)}s / 120s</span>
       </div>
       <div class="active-arena-bar-track">
         <div class="active-arena-bar-fill" style="width:${pct.toFixed(1)}%; background:${curPhase.accentColor};"></div>

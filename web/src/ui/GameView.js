@@ -19,7 +19,7 @@ function formatCountdown(seconds) {
   return `${mins}:${String(secs).padStart(2, '0')}`;
 }
 
-export function mountGameView(root, { initials, avatarId, audio, onFinishRun }) {
+export function mountGameView(root, { initials, avatarId, audio, onProgressRun, onFinishRun }) {
   const initialPhase = CAMPAIGN_PHASES[0];
   const avatarDef = PLAYER_AVATAR_MAP[avatarId] || PLAYER_AVATARS_FALLBACK(avatarId);
 
@@ -242,6 +242,13 @@ export function mountGameView(root, { initials, avatarId, audio, onFinishRun }) 
       }
 
       const elapsed = Number(snap.elapsedTime) || TOTAL_RUN_DURATION - snap.timeRemaining;
+      if (typeof onProgressRun === 'function') {
+        onProgressRun({
+          elapsedSeconds: elapsed,
+          kills: snap.kills,
+          stress: snap.stressIndex
+        });
+      }
       const p1Pct = Math.min(100, Math.max(0, (elapsed / 40.0) * 100));
       const p2Pct = Math.min(100, Math.max(0, ((elapsed - 40.0) / 40.0) * 100));
       const p3Pct = Math.min(100, Math.max(0, ((elapsed - 80.0) / 40.0) * 100));

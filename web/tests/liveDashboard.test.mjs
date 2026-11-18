@@ -167,3 +167,57 @@ test('LiveClassroomSync sincroniza en tiempo real run_start, run_finish y room_r
   assert.equal(store.records.length, 0);
   assert.equal(postedPayloads.at(-1).type, 'room_reset');
 });
+
+test('LiveClassroomSync recupera jugadores jugando ahora mismo por HTTPS (puerto 443) y tolera desfase de reloj entre móvil y PC', async () => {
+  const memStorage = createMemoryStorage();
+  const store = new TelemetryStore(memStorage);
+
+  // Simulamos que el móvil del amigo tiene el reloj 4 minutos atrasado respecto al PC del Dashboard,
+  // pero envía elapsedSeconds: 28 y kills: 14 a través del canal HTTPS (ntfy.sh)
+  const skewedStartedAt = Date.now() - 240000;
+  const ntfyEnvelopes = [
+    JSON.stringify({
+      id: 'ntfy_msg_1',
+      time: Math.floor(Date.now() / 1000) - 2,
+      event: 'message',
+      topic: 'panic_director_live_v3_clase',
+      message: JSON.stringify({
+        v: 1,
+        eventId: 'hb_friend_1',
+        runId: 'run_friend_01',
+        type: 'run_start',
+        room: 'CLASE',
+        clientId: 'friend_phone',
+        initials: 'Carlos',
+        avatar: 'inquisidor',
+        mode: 'unified',
+        startedAt: skewedStartedAt,
+        elapsedSeconds: 28,
+        kills: 14,
+        stress: 64
+      })
+    })
+  ].join('\n');
+
+  const mockFetch = async () => ({
+    ok: true,
+    text: async () => ntfyEnvelopes
+  });
+
+  const sync = new LiveClassroomSync(store, {
+    initialRoom: 'CLASE',
+    storage: memStorage,
+    fetchImpl: mockFetch,
+    WebSocketImpl: null,
+    EventSourceImpl: null
+  });
+
+  await sync.fetchHistory('2h', { isRealtime: true });
+
+  const state = sync.getState();
+  assert.equal(state.activePlayers.length, 1);
+  assert.equal(state.activePlayers[0].initials, 'CARLOS');
+  assert.equal(state.activePlayers[0].kills, 14);
+  assert.equal(state.activePlayers[0].elapsedSeconds, 28);
+});
+

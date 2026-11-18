@@ -6,10 +6,12 @@ import { normalizeInitials } from './telemetryStore.js';
 const ROOM_STORAGE_KEY = 'panic_director_room_code_v1';
 const CLIENT_ID_KEY = 'panic_director_client_id_v1';
 const RESET_AT_KEY_PREFIX = 'panic_director_reset_at_';
-const ACTIVE_RUN_TTL_MS = 145000;
+const ACTIVE_RUN_TTL_MS = 165000; // 120s de juego + 10s de pausas entre fases + margen
+const NTFY_BASE_URL = 'https://ntfy.sh';
 
-// Brokers públicos globales MQTT 3.1.1 sobre WebSockets (TLS / WSS, sin restricciones CORS)
+// Brokers públicos globales MQTT 3.1.1 sobre WebSockets (incluye puerto 443 estándar + puertos alternativos)
 const DEFAULT_WSS_BROKERS = [
+  'wss://mqtt.eclipseprojects.io:443/mqtt',
   'wss://broker.emqx.io:8084/mqtt',
   'wss://broker.hivemq.com:8884/mqtt',
   'wss://test.mosquitto.org:8081/mqtt'
@@ -188,6 +190,7 @@ export class LiveClassroomSync {
     this.store = store;
     this.fetchImpl = options.fetchImpl !== undefined ? options.fetchImpl : (typeof fetch !== 'undefined' ? fetch.bind(globalThis) : null);
     this.WebSocketImpl = options.WebSocketImpl !== undefined ? options.WebSocketImpl : (typeof WebSocket !== 'undefined' ? WebSocket : null);
+    this.EventSourceImpl = options.EventSourceImpl !== undefined ? options.EventSourceImpl : (typeof EventSource !== 'undefined' ? EventSource : null);
     this.storage = options.storage !== undefined ? options.storage : (typeof window !== 'undefined' ? window.localStorage : null);
     this.brokerUrls = options.brokerUrls || DEFAULT_WSS_BROKERS;
 
@@ -197,6 +200,10 @@ export class LiveClassroomSync {
 
     this.connectionState = 'connecting'; // 'connecting' | 'live' | 'local'
     this.activePlayers = new Map();
+    this.myActiveRun = null;
+    this.finishedRunIds = new Set();
+    this.finishedAfterByClient = new Map();
+    this.finishedAfterByPlayer = new Map();
     this.liveEvents = [];
     this.processedEventIds = new Set();
     this.knownRunTopics = new Set();
@@ -204,6 +211,10 @@ export class LiveClassroomSync {
     this.runToastListeners = new Set();
 
     this._sockets = new Map(); // brokerUrl -> { ws, ready, pingTimer, reconnectTimer }
+    this._eventSource = null;
+    this._pollTimer = null;
+    this._heartbeatTimer = null;
+    this._heartbeatCount = 0;
     this._cleanupTimer = null;
     this._broadcastChannel = null;
     this._stopped = false;
@@ -316,6 +327,9 @@ export class LiveClassroomSync {
     this._saveRoom(normalized);
     this.resetAtIso = this._loadResetAt(normalized);
     this.activePlayers.clear();
+    this.finishedRunIds.clear();
+    this.finishedAfterByClient.clear();
+    this.finishedAfterByPlayer.clear();
     this.liveEvents = [];
     this.processedEventIds.clear();
     this.knownRunTopics.clear();
@@ -327,6 +341,7 @@ export class LiveClassroomSync {
     this._stopped = false;
     this._setupLocalChannel();
     this.reconnect();
+
     if (typeof setInterval !== 'undefined' && !this._cleanupTimer) {
       this._cleanupTimer = setInterval(() => {
         const before = this.activePlayers.size;
@@ -336,14 +351,29 @@ export class LiveClassroomSync {
         }
       }, 2000);
     }
+
+    // Respaldo HTTPS periódico ligero (puerto 443) cada 10s por si la red bloquea WebSockets o corta SSE
+    if (typeof setInterval !== 'undefined' && this.fetchImpl && !this._pollTimer) {
+      this._pollTimer = setInterval(() => {
+        if (!this._stopped) {
+          this.fetchHistory('45s', { isRealtime: true });
+        }
+      }, 10000);
+    }
   }
 
   stop() {
     this._stopped = true;
+    this._stopHeartbeatTimer();
     this._closeAllSockets();
+    this._closeHttpStream();
     if (this._cleanupTimer) {
       clearInterval(this._cleanupTimer);
       this._cleanupTimer = null;
+    }
+    if (this._pollTimer) {
+      clearInterval(this._pollTimer);
+      this._pollTimer = null;
     }
     if (this._broadcastChannel) {
       try {
@@ -368,6 +398,17 @@ export class LiveClassroomSync {
     this._sockets.clear();
   }
 
+  _closeHttpStream() {
+    if (this._eventSource) {
+      try {
+        this._eventSource.close();
+      } catch {
+        // Ignorar
+      }
+      this._eventSource = null;
+    }
+  }
+
   _setupLocalChannel() {
     if (typeof BroadcastChannel !== 'undefined' && !this._broadcastChannel) {
       try {
@@ -385,16 +426,105 @@ export class LiveClassroomSync {
 
   reconnect() {
     this._closeAllSockets();
+    this._closeHttpStream();
     this.connectionState = 'connecting';
     this.notify();
 
+    let anyTransport = false;
+
     if (this.WebSocketImpl) {
+      anyTransport = true;
       for (const brokerUrl of this.brokerUrls) {
         this._connectMqttBroker(brokerUrl);
       }
-    } else {
+    }
+
+    if (this.EventSourceImpl) {
+      anyTransport = true;
+      this._connectHttpStream();
+    }
+
+    if (this.fetchImpl) {
+      anyTransport = true;
+      this.fetchHistory('2h', { isRealtime: false });
+    }
+
+    if (!anyTransport) {
       this.connectionState = 'local';
       this.notify();
+    }
+  }
+
+  async forceSyncNow() {
+    await this.publishRoomSnapshot();
+    if (this.fetchImpl) {
+      await this.fetchHistory('2h', { isRealtime: true });
+    }
+    this.notify();
+  }
+
+  _connectHttpStream() {
+    if (this._stopped || !this.EventSourceImpl) return;
+    const topic = buildTopicForRoom(this.roomCode);
+    try {
+      const es = new this.EventSourceImpl(`${NTFY_BASE_URL}/${topic}/sse?since=2h`);
+      this._eventSource = es;
+      es.onopen = () => {
+        this.connectionState = 'live';
+        this.notify();
+      };
+      es.onmessage = (ev) => {
+        if (ev?.data) {
+          this._handleNtfyEnvelope(ev.data, { isRealtime: true });
+        }
+      };
+      es.onerror = () => {
+        // EventSource reintenta automáticamente; el poll HTTPS y MQTT cubren el resto
+      };
+    } catch {
+      // Ignorar si EventSource no está disponible
+    }
+  }
+
+  async fetchHistory(since = '2h', { isRealtime = false } = {}) {
+    if (!this.fetchImpl) return;
+    const topic = buildTopicForRoom(this.roomCode);
+    try {
+      const res = await this.fetchImpl(`${NTFY_BASE_URL}/${topic}/json?poll=1&since=${encodeURIComponent(since)}`);
+      if (!res || !res.ok) return;
+      this.connectionState = 'live';
+      const text = await res.text();
+      if (!text) return;
+      const lines = text.split('\n').filter((l) => l.trim().length > 0);
+      for (const line of lines) {
+        this._handleNtfyEnvelope(line, { isRealtime });
+      }
+      this.notify();
+    } catch {
+      const anyWsReady = Array.from(this._sockets.values()).some((s) => s.ready);
+      if (!anyWsReady && this.connectionState === 'connecting') {
+        this.connectionState = 'local';
+        this.notify();
+      }
+    }
+  }
+
+  _handleNtfyEnvelope(rawJsonLine, { isRealtime = false } = {}) {
+    try {
+      const env = JSON.parse(rawJsonLine);
+      if (env.event && env.event !== 'message') return;
+      if (env.id && this.processedEventIds.has(env.id)) return;
+      if (env.id) this.processedEventIds.add(env.id);
+
+      const bodyStr = env.message;
+      if (!bodyStr || typeof bodyStr !== 'string') return;
+      const payload = JSON.parse(bodyStr);
+      // Si el sobre de ntfy fue emitido hace menos de 18 segundos, tratarlo como evento en vivo
+      const envAgeMs = env.time ? Date.now() - env.time * 1000 : 0;
+      const effectiveRealtime = isRealtime || (env.time && envAgeMs < 18000);
+      this.ingestPayload(payload, { isRealtime: Boolean(effectiveRealtime) });
+    } catch {
+      // Ignorar líneas que no sean JSON válido
     }
   }
 
@@ -436,7 +566,7 @@ export class LiveClassroomSync {
           if (pkt.type === 'connack' && pkt.returnCode === 0) {
             entry.ready = true;
             this.connectionState = 'live';
-            // Suscribirse a todos los sub-tópicos de la sala (incluye mensajes retenidos de partidas y reset)
+            // Suscribirse a todos los sub-tópicos de la sala (incluye mensajes retenidos de jugadores activos, partidas y reset)
             const subFilter = `${this._roomTopicPrefix()}/#`;
             ws.send(buildMqttSubscribePacket(1, subFilter));
 
@@ -448,14 +578,25 @@ export class LiveClassroomSync {
               }
             }, 25000);
 
-            // Auto-sincronizar las partidas locales que este dispositivo ya haya jugado
+            // Auto-sincronizar partida en curso (si está jugando ahora mismo) y partidas locales guardadas
             this._syncLocalRecordsToBroker(ws);
             this.notify();
           } else if (pkt.type === 'publish') {
-            if (pkt.topic.includes('/run/')) {
+            if (pkt.topic.includes('/run/') || pkt.topic.includes('/live/')) {
               this.knownRunTopics.add(pkt.topic);
             }
-            if (!pkt.payloadText) continue;
+            if (!pkt.payloadText) {
+              // Mensaje retenido vacío sobre /live/<clientId> significa que ese jugador terminó/salió de la arena
+              if (pkt.topic.includes('/live/')) {
+                const parts = pkt.topic.split('/live/');
+                const clearedClient = parts[1];
+                if (clearedClient && this.activePlayers.has(clearedClient)) {
+                  this.activePlayers.delete(clearedClient);
+                  this.notify();
+                }
+              }
+              continue;
+            }
             try {
               const parsed = JSON.parse(pkt.payloadText);
               // Si no es retenido, es un evento en vivo recién emitido (<100ms)
@@ -477,7 +618,7 @@ export class LiveClassroomSync {
         entry.pingTimer = null;
       }
       const anyReady = Array.from(this._sockets.values()).some((s) => s.ready);
-      if (!anyReady && !this._stopped) {
+      if (!anyReady && !this._eventSource && !this._stopped) {
         this.connectionState = 'local';
         this.notify();
       }
@@ -498,7 +639,18 @@ export class LiveClassroomSync {
     const prefix = this._roomTopicPrefix();
     const resetTime = this.resetAtIso ? new Date(this.resetAtIso).getTime() : 0;
 
-    // Publicar las últimas 25 partidas guardadas en este móvil/navegador con retain: true
+    // 1. Si este jugador está en mitad de una partida ahora mismo, publicar su presencia activa retenida inmediatamente
+    if (this.myActiveRun && Date.now() - this.myActiveRun.startedAt < ACTIVE_RUN_TTL_MS) {
+      const liveTopic = `${prefix}/live/${this.clientId}`;
+      this.knownRunTopics.add(liveTopic);
+      try {
+        ws.send(buildMqttPublishPacket(liveTopic, JSON.stringify(this.myActiveRun), { retain: true }));
+      } catch {
+        // Ignorar
+      }
+    }
+
+    // 2. Publicar las últimas 25 partidas guardadas en este móvil/navegador con retain: true
     const localRuns = this.store.records.slice(0, 25);
     for (const rec of localRuns) {
       const playedTime = new Date(rec.playedAt || 0).getTime();
@@ -524,10 +676,16 @@ export class LiveClassroomSync {
 
   _publishMqtt(subTopic, payloadObj, { retain = false } = {}) {
     const fullTopic = `${this._roomTopicPrefix()}/${subTopic}`;
-    if (subTopic.startsWith('run/')) {
+    if (subTopic.startsWith('run/') || subTopic.startsWith('live/')) {
       this.knownRunTopics.add(fullTopic);
     }
-    const packet = buildMqttPublishPacket(fullTopic, JSON.stringify(payloadObj), { retain });
+    const payloadData =
+      payloadObj instanceof Uint8Array
+        ? payloadObj
+        : payloadObj === null
+          ? new Uint8Array(0)
+          : JSON.stringify(payloadObj);
+    const packet = buildMqttPublishPacket(fullTopic, payloadData, { retain });
     let sentCount = 0;
     for (const entry of this._sockets.values()) {
       if (entry.ready && entry.ws.readyState === 1) {
@@ -551,12 +709,93 @@ export class LiveClassroomSync {
         this._saveResetAt(this.roomCode, payload.resetAt);
         this.store.clearAll();
         this.activePlayers.clear();
+        this.finishedRunIds.clear();
+        this.finishedAfterByClient.clear();
+        this.finishedAfterByPlayer.clear();
         this.liveEvents = [];
         this.processedEventIds.clear();
         this.notify();
         return true;
       }
       return false;
+    }
+
+    if (payload.type === 'run_cancel') {
+      const key = payload.clientId || normalizeInitials(payload.initials);
+      if (payload.runId) this.finishedRunIds.add(payload.runId);
+      if (key && this.activePlayers.has(key)) {
+        this.activePlayers.delete(key);
+        this.notify();
+        return true;
+      }
+      return false;
+    }
+
+    // Para run_start y latidos en vivo (heartbeats), permitir actualizaciones de progreso del mismo jugador
+    if (payload.type === 'run_start') {
+      if (payload.runId && this.finishedRunIds.has(payload.runId)) {
+        return false;
+      }
+
+      const rawStartedAt = Number(payload.startedAt) || Date.now();
+      const normInit = normalizeInitials(payload.initials);
+      const key = payload.clientId || normInit;
+
+      // Si ya recibimos un run_finish de este jugador posterior al inicio de esta partida, ignorar run_start antiguo
+      const finishedClientAt = this.finishedAfterByClient.get(key) || 0;
+      const finishedPlayerAt = this.finishedAfterByPlayer.get(normInit) || 0;
+      if (rawStartedAt <= Math.max(finishedClientAt, finishedPlayerAt)) {
+        return false;
+      }
+
+      // Solo filtrar por resetAtIso o TTL estricto cuando es un mensaje histórico retenido, no cuando llega en vivo
+      if (!isRealtime) {
+        if (this.resetAtIso && rawStartedAt < new Date(this.resetAtIso).getTime() - 15000) {
+          return false;
+        }
+        if (Date.now() - rawStartedAt > ACTIVE_RUN_TTL_MS) {
+          return false;
+        }
+      }
+
+      const hasExplicitElapsed = payload.elapsedSeconds !== undefined && payload.elapsedSeconds !== null;
+      const elapsedSeconds = Math.max(0, Number(payload.elapsedSeconds) || 0);
+      if (elapsedSeconds >= 125) {
+        return false;
+      }
+
+      // Anclar al reloj local del Dashboard si llega con elapsedSeconds o si hay desfase de reloj entre móvil y PC
+      const clockSkewMs = Math.abs(Date.now() - rawStartedAt);
+      const effectiveStartedAt =
+        hasExplicitElapsed || (isRealtime && clockSkewMs > 5000)
+          ? Date.now() - elapsedSeconds * 1000
+          : rawStartedAt;
+
+      const existing = this.activePlayers.get(key);
+      const isNewOrChanged =
+        !existing ||
+        existing.initials !== normInit ||
+        existing.avatar !== (payload.avatar || 'penitente') ||
+        existing.runId !== (payload.runId || null);
+
+      this.activePlayers.set(key, {
+        clientId: key,
+        runId: payload.runId || existing?.runId || null,
+        initials: normInit,
+        avatar: payload.avatar || 'penitente',
+        mode: payload.mode || 'unified',
+        startedAt: effectiveStartedAt,
+        rawStartedAt,
+        lastSeenAt: Date.now(),
+        elapsedSeconds: hasExplicitElapsed ? elapsedSeconds : existing?.elapsedSeconds || 0,
+        kills: payload.kills !== undefined ? Number(payload.kills) : existing?.kills || 0,
+        stress: payload.stress !== undefined ? Number(payload.stress) : existing?.stress || 0
+      });
+
+      if (isNewOrChanged) {
+        this.notify();
+      }
+      return true;
     }
 
     const eventKey = payload.eventId || (payload.record && payload.record.id) || null;
@@ -567,35 +806,21 @@ export class LiveClassroomSync {
       this.processedEventIds.add(eventKey);
     }
 
-    if (payload.type === 'run_start') {
-      const startedAt = Number(payload.startedAt) || Date.now();
-      if (this.resetAtIso && startedAt < new Date(this.resetAtIso).getTime()) {
-        return false;
-      }
-      if (Date.now() - startedAt > ACTIVE_RUN_TTL_MS) {
-        return false;
-      }
-      const key = payload.clientId || normalizeInitials(payload.initials);
-      this.activePlayers.set(key, {
-        clientId: key,
-        initials: normalizeInitials(payload.initials),
-        avatar: payload.avatar || 'penitente',
-        mode: payload.mode || 'director2026',
-        startedAt
-      });
-      this.notify();
-      return true;
-    }
-
     if (payload.type === 'run_finish' && payload.record) {
       const rec = payload.record;
       const playedTime = new Date(rec.playedAt || Date.now()).getTime();
-      if (this.resetAtIso && playedTime < new Date(this.resetAtIso).getTime()) {
+      if (!isRealtime && this.resetAtIso && playedTime < new Date(this.resetAtIso).getTime() - 15000) {
         return false;
       }
 
-      if (payload.clientId) this.activePlayers.delete(payload.clientId);
       const normInit = normalizeInitials(rec.initials);
+      if (payload.runId) this.finishedRunIds.add(payload.runId);
+      const finishStamp = Math.max(playedTime, Number(payload.startedAt) || 0, Date.now());
+      if (payload.clientId) {
+        this.finishedAfterByClient.set(payload.clientId, finishStamp);
+        this.activePlayers.delete(payload.clientId);
+      }
+      this.finishedAfterByPlayer.set(normInit, finishStamp);
       for (const [k, v] of this.activePlayers.entries()) {
         if (v.initials === normInit) this.activePlayers.delete(k);
       }
@@ -618,7 +843,7 @@ export class LiveClassroomSync {
 
     if (payload.type === 'room_snapshot' && Array.isArray(payload.records)) {
       const validRecords = this.resetAtIso
-        ? payload.records.filter((r) => new Date(r.playedAt || 0).getTime() >= new Date(this.resetAtIso).getTime())
+        ? payload.records.filter((r) => new Date(r.playedAt || 0).getTime() >= new Date(this.resetAtIso).getTime() - 15000)
         : payload.records;
       if (validRecords.length > 0) {
         const added = this.store.importAndMergeJSON(JSON.stringify(validRecords));
@@ -640,7 +865,7 @@ export class LiveClassroomSync {
       id: rec.id,
       initials: normalizeInitials(rec.initials),
       avatar: rec.avatar || 'penitente',
-      mode: rec.mode || 'director2026',
+      mode: rec.mode || 'unified',
       survivedSeconds: Number(rec.survivedSeconds) || 0,
       didSurvive: Boolean(rec.didSurvive),
       kills: Number(rec.kills) || 0,
@@ -663,31 +888,114 @@ export class LiveClassroomSync {
     }
   }
 
+  _startHeartbeatTimer() {
+    this._stopHeartbeatTimer();
+    this._heartbeatCount = 0;
+    if (typeof setInterval === 'undefined') return;
+
+    this._heartbeatTimer = setInterval(() => {
+      if (!this.myActiveRun || this._stopped) {
+        this._stopHeartbeatTimer();
+        return;
+      }
+      if (Date.now() - this.myActiveRun.startedAt > ACTIVE_RUN_TTL_MS) {
+        this._stopHeartbeatTimer();
+        return;
+      }
+      this._heartbeatCount++;
+      const fallbackElapsed = Math.min(120, Math.max(0, (Date.now() - this.myActiveRun.startedAt) / 1000));
+      const payload = {
+        ...this.myActiveRun,
+        eventId: `hb_${this.clientId}_${Date.now()}`,
+        elapsedSeconds:
+          this.myActiveRun.elapsedSeconds > 0
+            ? Number(this.myActiveRun.elapsedSeconds.toFixed(1))
+            : Number(fallbackElapsed.toFixed(1))
+      };
+      this.myActiveRun = payload;
+      this._broadcastLocal(payload);
+      this._publishMqtt(`live/${this.clientId}`, payload, { retain: true });
+      // Publicar en HTTPS puerto 443 en el primer latido (4s) y luego cada 8s para máxima visibilidad sin saturar ntfy
+      if (this._heartbeatCount === 1 || this._heartbeatCount % 2 === 0) {
+        this._postToCloudFallback(payload);
+      }
+    }, 4000);
+  }
+
+  _stopHeartbeatTimer() {
+    if (this._heartbeatTimer) {
+      clearInterval(this._heartbeatTimer);
+      this._heartbeatTimer = null;
+    }
+  }
+
+  updateRunProgress({ elapsedSeconds, kills, stress }) {
+    if (!this.myActiveRun) return;
+    if (typeof elapsedSeconds === 'number' && !Number.isNaN(elapsedSeconds)) {
+      this.myActiveRun.elapsedSeconds = Number(elapsedSeconds.toFixed(1));
+    }
+    if (typeof kills === 'number' && !Number.isNaN(kills)) {
+      this.myActiveRun.kills = kills;
+    }
+    if (typeof stress === 'number' && !Number.isNaN(stress)) {
+      this.myActiveRun.stress = Math.round(stress);
+    }
+    const existing = this.activePlayers.get(this.clientId);
+    if (existing) {
+      existing.elapsedSeconds = this.myActiveRun.elapsedSeconds;
+      existing.kills = this.myActiveRun.kills;
+      existing.stress = this.myActiveRun.stress;
+      existing.startedAt = Date.now() - this.myActiveRun.elapsedSeconds * 1000;
+    }
+  }
+
   async publishRunStart({ initials, avatar, mode }) {
+    const now = Date.now();
+    const runId = `run_${this.clientId}_${now}`;
     const payload = {
       v: 1,
-      eventId: `start_${this.clientId}_${Date.now()}`,
+      eventId: `start_${this.clientId}_${now}`,
+      runId,
       type: 'run_start',
       room: this.roomCode,
       clientId: this.clientId,
       initials: normalizeInitials(initials),
       avatar: avatar || 'penitente',
-      mode: mode || 'director2026',
-      startedAt: Date.now()
+      mode: mode || 'unified',
+      startedAt: now,
+      elapsedSeconds: 0,
+      kills: 0,
+      stress: 18
     };
+    this.myActiveRun = payload;
     this.ingestPayload(payload, { isRealtime: true });
     this._broadcastLocal(payload);
-    this._publishMqtt(`live/${this.clientId}`, payload, { retain: false });
+    // Publicar con retain: true para que cualquier Dashboard que se conecte o refresque vea al jugador en la arena
+    this._publishMqtt(`live/${this.clientId}`, payload, { retain: true });
+    this._publishMqtt('events', payload, { retain: false });
+    this._startHeartbeatTimer();
     await this._postToCloudFallback(payload);
   }
 
   async publishRunFinish(record) {
+    const finishedRunId = this.myActiveRun?.runId || null;
+    const finishedStartedAt = this.myActiveRun?.startedAt || Date.now();
+    this._stopHeartbeatTimer();
+    this.myActiveRun = null;
     this.activePlayers.delete(this.clientId);
+    if (finishedRunId) this.finishedRunIds.add(finishedRunId);
+    this.finishedAfterByClient.set(this.clientId, Date.now());
+    this.finishedAfterByPlayer.set(normalizeInitials(record.initials), Date.now());
     this._pushLiveEvent(record);
+
+    // Limpiar el mensaje retenido de presencia activa en la arena
+    this._publishMqtt(`live/${this.clientId}`, null, { retain: true });
 
     const payload = {
       v: 1,
       eventId: `finish_${record.id}`,
+      runId: finishedRunId,
+      startedAt: finishedStartedAt,
       type: 'run_finish',
       room: this.roomCode,
       clientId: this.clientId,
@@ -705,8 +1013,13 @@ export class LiveClassroomSync {
   async publishRoomReset() {
     const resetAt = new Date().toISOString();
     this._saveResetAt(this.roomCode, resetAt);
+    this._stopHeartbeatTimer();
+    this.myActiveRun = null;
     this.store.clearAll();
     this.activePlayers.clear();
+    this.finishedRunIds.clear();
+    this.finishedAfterByClient.clear();
+    this.finishedAfterByPlayer.clear();
     this.liveEvents = [];
     this.processedEventIds.clear();
 
@@ -723,7 +1036,7 @@ export class LiveClassroomSync {
     // Guardar marca de reset retenida en los brokers
     this._publishMqtt('meta/reset', payload, { retain: true });
 
-    // Limpiar mensajes retenidos conocidos de partidas anteriores
+    // Limpiar mensajes retenidos conocidos de partidas anteriores y jugadores activos
     for (const topic of this.knownRunTopics) {
       const clearPkt = buildMqttPublishPacket(topic, new Uint8Array(0), { retain: true });
       for (const entry of this._sockets.values()) {
@@ -748,6 +1061,18 @@ export class LiveClassroomSync {
         this._syncLocalRecordsToBroker(entry.ws);
       }
     }
+    if (this.store.records.length > 0) {
+      const payload = {
+        v: 1,
+        eventId: `snap_${this.clientId}_${Date.now()}`,
+        type: 'room_snapshot',
+        room: this.roomCode,
+        clientId: this.clientId,
+        records: this.store.records.slice(0, 40)
+      };
+      this._broadcastLocal(payload);
+      await this._postToCloudFallback(payload);
+    }
   }
 
   _broadcastLocal(payload) {
@@ -764,7 +1089,7 @@ export class LiveClassroomSync {
     if (!this.fetchImpl) return false;
     const topic = buildTopicForRoom(this.roomCode);
     try {
-      const res = await this.fetchImpl(`https://ntfy.sh/${topic}`, {
+      const res = await this.fetchImpl(`${NTFY_BASE_URL}/${topic}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'text/plain;charset=UTF-8'
