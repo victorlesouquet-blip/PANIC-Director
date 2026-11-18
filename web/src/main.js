@@ -28,7 +28,7 @@ function savePrefs(state) {
     window.localStorage.setItem(
       PREFS_KEY,
       JSON.stringify({
-        initialsChars: state.initialsChars,
+        playerName: state.playerName,
         selectedMode: state.selectedMode,
         selectedAvatar: state.selectedAvatar
       })
@@ -61,10 +61,10 @@ const audio = new WebAudioHaptics();
 
 const appState = {
   screen: detectInitialScreen(),
-  initialsChars:
-    Array.isArray(savedPrefs?.initialsChars) && savedPrefs.initialsChars.length === 3
-      ? savedPrefs.initialsChars
-      : ['V', 'L', 'F'],
+  playerName:
+    typeof savedPrefs?.playerName === 'string'
+      ? savedPrefs.playerName.slice(0, 18)
+      : '',
   selectedMode: 'unified',
   selectedAvatar:
     savedPrefs?.selectedAvatar && PLAYER_AVATAR_MAP[savedPrefs.selectedAvatar]
@@ -108,9 +108,9 @@ function navigate(nextScreen) {
 }
 
 function startRunWithLivePresence() {
-  const initials = normalizeInitials(appState.initialsChars.join(''));
+  const playerName = normalizeInitials(appState.playerName);
   liveSync.publishRunStart({
-    initials,
+    initials: playerName,
     avatar: appState.selectedAvatar,
     mode: 'unified'
   });
@@ -126,7 +126,7 @@ function renderApp() {
   if (appState.screen === 'game') {
     document.body.classList.add('in-game');
     activeCleanup = mountGameView(rootEl, {
-      initials: normalizeInitials(appState.initialsChars.join('')),
+      initials: normalizeInitials(appState.playerName),
       modeId: 'unified',
       avatarId: appState.selectedAvatar,
       audio,
@@ -191,9 +191,8 @@ function renderApp() {
         appState.playersInitialTarget = null;
         navigate('start');
       },
-      onUsePlayerSetup: (initials, avatarId) => {
-        const norm = normalizeInitials(initials);
-        appState.initialsChars = [norm[0], norm[1], norm[2]];
+      onUsePlayerSetup: (playerName, avatarId) => {
+        appState.playerName = normalizeInitials(playerName);
         if (avatarId && PLAYER_AVATAR_MAP[avatarId]) {
           appState.selectedAvatar = avatarId;
         }
@@ -209,7 +208,7 @@ function renderApp() {
   mountStartView(
     rootEl,
     {
-      initialsChars: appState.initialsChars,
+      playerName: appState.playerName,
       selectedMode: appState.selectedMode,
       selectedAvatar: appState.selectedAvatar,
       recordedCount: store.records.length,
@@ -217,21 +216,14 @@ function renderApp() {
       roomCode: liveSync.roomCode
     },
     {
-      onUpdateInitials: (nextChars, opts = {}) => {
-        appState.initialsChars = nextChars;
+      onUpdatePlayerName: (nextName, opts = {}) => {
+        appState.playerName = String(nextName || '').slice(0, 18);
         savePrefs(appState);
         if (!opts.skipRerender) renderApp();
       },
       onSelectAvatar: (avatarId) => {
         if (PLAYER_AVATAR_MAP[avatarId]) {
           appState.selectedAvatar = avatarId;
-          savePrefs(appState);
-          renderApp();
-        }
-      },
-      onSelectMode: (modeId) => {
-        if (GAME_MODE_MAP[modeId]) {
-          appState.selectedMode = modeId;
           savePrefs(appState);
           renderApp();
         }

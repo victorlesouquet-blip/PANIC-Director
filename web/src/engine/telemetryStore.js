@@ -4,11 +4,17 @@ import { GAME_MODES } from './constants.js';
 
 const STORAGE_KEY = 'panic_director_web_telemetry_v1';
 
-export function normalizeInitials(raw) {
-  const cleaned = String(raw || '').trim().toUpperCase().replace(/[^A-Z]/g, '');
-  if (!cleaned) return '---';
-  return cleaned.slice(0, 3).padEnd(3, 'A');
+export function normalizePlayerName(raw) {
+  const cleaned = String(raw || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/[<>&"']/g, '')
+    .slice(0, 18)
+    .toUpperCase();
+  return cleaned || 'ANÓNIMO';
 }
+
+export const normalizeInitials = normalizePlayerName;
 
 export function aggregateModeStats(records, modeId) {
   const entries = [];

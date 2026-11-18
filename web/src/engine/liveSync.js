@@ -6,7 +6,7 @@ import { normalizeInitials } from './telemetryStore.js';
 const ROOM_STORAGE_KEY = 'panic_director_room_code_v1';
 const CLIENT_ID_KEY = 'panic_director_client_id_v1';
 const RESET_AT_KEY_PREFIX = 'panic_director_reset_at_';
-const ACTIVE_RUN_TTL_MS = 66000;
+const ACTIVE_RUN_TTL_MS = 145000;
 
 // Brokers públicos globales MQTT 3.1.1 sobre WebSockets (TLS / WSS, sin restricciones CORS)
 const DEFAULT_WSS_BROKERS = [

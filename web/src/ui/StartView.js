@@ -1,4 +1,4 @@
-// Pantalla de Inicio Recreativa (Iniciales, 12 Avatares 3D, 3 Motores de IA y Accesos de Telemetría)
+// Pantalla de Inicio (Nombre de Jugador, 12 Avatares 3D, Campaña Progresiva 3 Fases y Accesos de Telemetría)
 
 import {
   CAMPAIGN_PHASES,
@@ -9,11 +9,9 @@ import {
 import { renderAvatarSVG } from '../scene/avatarSVGs.js';
 import { escapeHtml } from './domUtils.js';
 
-const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
-
 export function mountStartView(root, state, actions) {
   const avatarDef = PLAYER_AVATAR_MAP[state.selectedAvatar] || PLAYER_AVATARS[0];
-  const initialsArr = [...state.initialsChars];
+  const currentName = String(state.playerName || '').trim();
 
   root.innerHTML = `
     <main class="screen-shell start-screen" aria-labelledby="main-title">
@@ -35,37 +33,42 @@ export function mountStartView(root, state, actions) {
         ` : ''}
       </header>
 
-      <section class="panel" aria-label="Iniciales del jugador">
+      <section class="panel player-name-panel" aria-label="Nombre del jugador">
         <div class="panel-head">
-          <h2 class="panel-label">INICIALES DEL JUGADOR</h2>
-          <label class="direct-input-wrap" for="input-initials-direct">
-            <span class="micro-mono-muted">TECLADO</span>
-            <input
-              id="input-initials-direct"
-              class="direct-initials-input"
-              type="text"
-              maxlength="3"
-              autocomplete="off"
-              autocapitalize="characters"
-              spellcheck="false"
-              value="${escapeHtml(initialsArr.join(''))}"
-              aria-label="Escribir 3 iniciales"
-            />
-          </label>
+          <label class="panel-label" for="input-player-name">TU NOMBRE DE JUGADOR</label>
+          <span class="micro-mono-gold">RÁNKING EN VIVO</span>
         </div>
 
-        <div class="wheels-row" role="group" aria-label="Ruleta de iniciales arcade">
-          ${initialsArr
-            .map(
-              (ch, idx) => `
-              <div class="letter-wheel" data-wheel-index="${idx}">
-                <button type="button" id="btn-wheel-up-${idx}" class="wheel-step" data-step="1" data-idx="${idx}" aria-label="Siguiente letra posición ${idx + 1}">▲</button>
-                <button type="button" id="btn-wheel-letter-${idx}" class="wheel-char" data-step="1" data-idx="${idx}" aria-label="Letra ${idx + 1}: ${escapeHtml(ch)}">${escapeHtml(ch)}</button>
-                <button type="button" id="btn-wheel-down-${idx}" class="wheel-step" data-step="-1" data-idx="${idx}" aria-label="Letra anterior posición ${idx + 1}">▼</button>
-              </div>
-            `
-            )
-            .join('')}
+        <div id="player-name-field-wrap" class="player-name-field-wrap">
+          <span class="player-name-icon" aria-hidden="true">☺</span>
+          <input
+            id="input-player-name"
+            class="player-name-input"
+            type="text"
+            maxlength="18"
+            autocomplete="name"
+            autocapitalize="words"
+            spellcheck="false"
+            placeholder="Escribe tu nombre (ej. Víctor, Lucía...)"
+            value="${escapeHtml(state.playerName || '')}"
+            aria-label="Escribe tu nombre de jugador"
+          />
+          <button
+            type="button"
+            id="btn-clear-player-name"
+            class="player-name-clear-btn"
+            aria-label="Borrar nombre"
+            ${currentName ? '' : 'hidden'}
+          >✕</button>
+        </div>
+
+        <p id="player-name-error" class="player-name-error-msg" hidden role="alert">
+          ⚠️ Escribe tu nombre arriba para aparecer en el ránking en tiempo real de la clase.
+        </p>
+
+        <div class="player-name-preview-bar">
+          ${renderAvatarSVG(avatarDef.id, 22, true)}
+          <span>En el proyector saldrás como: <strong id="player-name-preview-text" style="color:${RELICARIO_PALETTE.ivory};">${escapeHtml(currentName ? currentName.toUpperCase() : 'TU NOMBRE')}</strong></span>
         </div>
       </section>
 
@@ -170,34 +173,57 @@ export function mountStartView(root, state, actions) {
     </main>
   `;
 
-  // Eventos de ruleta arcade
-  root.querySelectorAll('.wheel-step, .wheel-char').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const idx = Number(btn.dataset.idx);
-      const step = Number(btn.dataset.step);
-      const curIdx = Math.max(0, ALPHABET.indexOf(state.initialsChars[idx]));
-      const nextIdx = (curIdx + step + ALPHABET.length) % ALPHABET.length;
-      state.initialsChars[idx] = ALPHABET[nextIdx];
-      actions.onUpdateInitials([...state.initialsChars]);
-    });
+  const nameInput = root.querySelector('#input-player-name');
+  const clearBtn = root.querySelector('#btn-clear-player-name');
+  const previewText = root.querySelector('#player-name-preview-text');
+  const errorMsg = root.querySelector('#player-name-error');
+  const fieldWrap = root.querySelector('#player-name-field-wrap');
+
+  const syncNameUi = (rawVal) => {
+    const cleaned = String(rawVal || '').replace(/[<>&"']/g, '').slice(0, 18);
+    const trimmed = cleaned.trim();
+    if (previewText) {
+      previewText.textContent = trimmed ? trimmed.toUpperCase() : 'TU NOMBRE';
+    }
+    if (clearBtn) {
+      clearBtn.hidden = !trimmed;
+    }
+    if (trimmed && errorMsg && !errorMsg.hidden) {
+      errorMsg.hidden = true;
+      fieldWrap?.classList.remove('is-invalid');
+    }
+    actions.onUpdatePlayerName(cleaned, { skipRerender: true });
+  };
+
+  nameInput?.addEventListener('input', (e) => {
+    syncNameUi(e.target.value);
   });
 
-  // Entrada directa por teclado físico / móvil
-  const directInput = root.querySelector('#input-initials-direct');
-  directInput.addEventListener('input', (e) => {
-    const cleaned = String(e.target.value || '')
-      .toUpperCase()
-      .replace(/[^A-Z]/g, '')
-      .slice(0, 3);
-    e.target.value = cleaned;
-    if (cleaned.length > 0) {
-      const padded = cleaned.padEnd(3, state.initialsChars.join('').slice(cleaned.length) || 'A');
-      const nextChars = [padded[0] || 'A', padded[1] || 'A', padded[2] || 'A'];
-      actions.onUpdateInitials(nextChars, { skipRerender: true });
-      nextChars.forEach((ch, idx) => {
-        const el = root.querySelector(`#btn-wheel-letter-${idx}`);
-        if (el) el.textContent = ch;
-      });
+  clearBtn?.addEventListener('click', () => {
+    if (nameInput) {
+      nameInput.value = '';
+      syncNameUi('');
+      nameInput.focus();
+    }
+  });
+
+  const handleTryStart = () => {
+    const current = String(nameInput?.value || '').trim();
+    if (!current) {
+      if (errorMsg) errorMsg.hidden = false;
+      fieldWrap?.classList.add('is-invalid');
+      nameInput?.focus();
+      nameInput?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    actions.onUpdatePlayerName(current, { skipRerender: true });
+    actions.onStartGame();
+  };
+
+  nameInput?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleTryStart();
     }
   });
 
@@ -209,7 +235,7 @@ export function mountStartView(root, state, actions) {
   });
 
   // Iniciar / Navegación
-  root.querySelector('#btn-start-game').addEventListener('click', () => actions.onStartGame());
+  root.querySelector('#btn-start-game').addEventListener('click', handleTryStart);
   root.querySelector('#btn-open-telemetry').addEventListener('click', () => actions.onOpenTelemetry());
   root.querySelector('#btn-open-players').addEventListener('click', () => actions.onOpenPlayers());
   root.querySelector('#btn-open-dashboard')?.addEventListener('click', () => actions.onOpenDashboard?.());

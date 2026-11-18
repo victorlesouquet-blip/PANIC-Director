@@ -16,7 +16,20 @@ import { normalizeRoomCode } from '../engine/liveSync.js';
 import { renderAvatarSVG } from '../scene/avatarSVGs.js';
 import { escapeHtml, medalColor } from './domUtils.js';
 
-const DEMO_INITIALS_POOL = ['VLF', 'MAR', 'ALE', 'LUC', 'CAR', 'SOF', 'DAN', 'PAU', 'JAV', 'ELN', 'HUG', 'CLA'];
+const DEMO_INITIALS_POOL = [
+  'VÍCTOR',
+  'LUCÍA',
+  'ALEJANDRO',
+  'SOFÍA',
+  'MATEO',
+  'VALERIA',
+  'DANIEL',
+  'PAULA',
+  'HUGO',
+  'CLARA',
+  'ADRIÁN',
+  'ELENA'
+];
 
 export function mountDashboardView(root, { store, liveSync, audio, onReturnToStart, onOpenPlayerProfile }) {
   let sortMetric = 'overallRanking';

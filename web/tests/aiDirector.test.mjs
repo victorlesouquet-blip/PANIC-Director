@@ -234,7 +234,7 @@ test('Comportamiento específico: 1985 botiquín fijo, 2026 corredor de escape, 
   assert.equal(surgeDirective.isInterventionActive, true);
 });
 
-test('TelemetryStore: medias exactas, desglose por fases (phaseBreakdown), ránking y fusión JSON', () => {
+test('TelemetryStore: nombres completos de jugador, desglose por fases (phaseBreakdown), ránking y fusión JSON', () => {
   class MemoryStorage {
     constructor() { this.map = new Map(); }
     getItem(k) { return this.map.get(k) ?? null; }
@@ -242,14 +242,14 @@ test('TelemetryStore: medias exactas, desglose por fases (phaseBreakdown), ránk
     removeItem(k) { this.map.delete(k); }
   }
 
-  assert.equal(normalizeInitials('vlf'), 'VLF');
-  assert.equal(normalizeInitials(' a '), 'AAA');
-  assert.equal(normalizeInitials(''), '---');
+  assert.equal(normalizeInitials('Víctor'), 'VÍCTOR');
+  assert.equal(normalizeInitials('  Lucía  Gómez '), 'LUCÍA GÓMEZ');
+  assert.equal(normalizeInitials(''), 'ANÓNIMO');
 
   const store = new TelemetryStore(new MemoryStorage());
   store.recordRun({
     id: 'run-1',
-    initials: 'VLF',
+    initials: 'Víctor',
     avatar: 'serafin',
     mode: 'unified',
     survivedSeconds: 120,
@@ -268,7 +268,7 @@ test('TelemetryStore: medias exactas, desglose por fases (phaseBreakdown), ránk
   });
   store.recordRun({
     id: 'run-2',
-    initials: 'ana',
+    initials: 'Lucía',
     avatar: 'cuervo',
     mode: 'unified',
     survivedSeconds: 65,
@@ -297,22 +297,23 @@ test('TelemetryStore: medias exactas, desglose por fases (phaseBreakdown), ránk
   assert.equal(s26.runCount, 1);
   assert.equal(s26.survivalRatePercent, 100);
 
-  const vlf = store.profile('VLF');
+  const vlf = store.profile('Víctor');
   assert.ok(vlf);
+  assert.equal(vlf.initials, 'VÍCTOR');
   assert.equal(vlf.favoriteAvatar, 'serafin');
   // 120*10 + 60*12 + 100*2.5 = 1200 + 720 + 250 = 2170
   assert.equal(Math.round(vlf.rankingScore), 2170);
-  assert.equal(store.globalRank('VLF'), 1);
-  assert.equal(store.globalRank('ANA'), 2);
+  assert.equal(store.globalRank('VÍCTOR'), 1);
+  assert.equal(store.globalRank('LUCÍA'), 2);
 
   const byStress = store.playerProfiles({ sortBy: 'avgStress' });
-  assert.equal(byStress[0].initials, 'ANA');
+  assert.equal(byStress[0].initials, 'LUCÍA');
 
   const exported = store.exportJSON();
   const secondStore = new TelemetryStore(new MemoryStorage());
   secondStore.recordRun({
     id: 'run-2', // duplicado intencionado
-    initials: 'ANA',
+    initials: 'Lucía',
     avatar: 'cuervo',
     mode: 'unified',
     survivedSeconds: 65,

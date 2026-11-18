@@ -60,10 +60,10 @@ export function mountPlayersView(
                 id="input-player-search"
                 class="search-input"
                 type="search"
-                maxlength="3"
-                placeholder="Buscar jugador por iniciales (ej. VLF)..."
+                maxlength="18"
+                placeholder="Buscar jugador por nombre (ej. Víctor, Lucía)..."
                 value="${escapeHtml(searchText)}"
-                aria-label="Buscar jugador por iniciales"
+                aria-label="Buscar jugador por nombre"
               />
               ${searchText ? `<button type="button" id="btn-clear-search" class="btn-clear-input" aria-label="Limpiar búsqueda">✕</button>` : ''}
             </div>
@@ -113,7 +113,7 @@ export function mountPlayersView(
             ? `<section class="panel empty-panel">
                 <h2>Sin jugadores registrados todavía</h2>
                 <p class="panel-subcopy">${selectedModeFilter === null
-                  ? 'Completa partidas con distintas iniciales para ver el listado de jugadores, sus medias y su perfil individual.'
+                  ? 'Completa partidas con distintos nombres para ver el listado de jugadores, sus medias y su perfil individual.'
                   : 'Ningún jugador ha alcanzado esta fase todavía.'}</p>
               </section>`
             : filtered.length === 0
@@ -141,7 +141,7 @@ export function mountPlayersView(
     const searchInput = root.querySelector('#input-player-search');
     searchInput?.addEventListener('input', (e) => {
       const caret = e.target.selectionStart;
-      searchText = String(e.target.value || '').toUpperCase().replace(/[^A-Z]/g, '');
+      searchText = String(e.target.value || '').toUpperCase().replace(/[<>&"']/g, '').slice(0, 18);
       render();
       const restored = root.querySelector('#input-player-search');
       if (restored) {
