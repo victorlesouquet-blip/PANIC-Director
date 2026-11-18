@@ -162,9 +162,10 @@ function renderApp() {
   }
 
   if (appState.screen === 'results') {
-    mountResultsView(rootEl, {
+    activeCleanup = mountResultsView(rootEl, {
       lastRecord: appState.lastRecord,
       store,
+      liveSync,
       roomCode: liveSync.roomCode,
       onPlayAgain: () => {
         audio.unlock();
@@ -185,8 +186,9 @@ function renderApp() {
   }
 
   if (appState.screen === 'players') {
-    mountPlayersView(rootEl, {
+    activeCleanup = mountPlayersView(rootEl, {
       store,
+      liveSync,
       initialPlayerInitials: appState.playersInitialTarget,
       onReturnToStart: () => {
         appState.playersInitialTarget = null;

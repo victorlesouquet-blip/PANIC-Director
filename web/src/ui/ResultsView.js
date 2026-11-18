@@ -266,9 +266,31 @@ export function mountResultsView(root, { lastRecord, store, roomCode = 'CLASE', 
       syncNotice = '';
       render();
     });
+
+    root.querySelector('#btn-force-resync')?.addEventListener('click', async () => {
+      if (liveSync) {
+        await liveSync.publishRoomSnapshot();
+        if (lastRecord) await liveSync.publishRunFinish(lastRecord);
+        syncError = false;
+        syncNotice = `Sincronizadas ${store.records.length} partidas con la sala ${roomCode}.`;
+        render();
+      }
+    });
   };
 
   render();
+
+  const unsub = liveSync
+    ? liveSync.subscribe(() => {
+        if (!pasteDrawerOpen && !confirmResetOpen) {
+          render();
+        }
+      })
+    : null;
+
+  return () => {
+    if (unsub) unsub();
+  };
 }
 
 function buildRunSummaryHtml(rec, roomCode = 'CLASE') {
@@ -305,7 +327,8 @@ function buildRunSummaryHtml(rec, roomCode = 'CLASE') {
 
       <div class="run-live-synced-note">
         <span class="pulse-dot"></span>
-        <span>Enviado en tiempo real al Dashboard de la sala <strong>${escapeHtml(roomCode)}</strong></span>
+        <span>Enviado en vivo a la sala <strong>${escapeHtml(roomCode)}</strong></span>
+        <button type="button" id="btn-force-resync" class="btn-resync-inline">Re-enviar</button>
       </div>
     </section>
   `;

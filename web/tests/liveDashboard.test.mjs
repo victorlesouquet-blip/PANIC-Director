@@ -2,7 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { generateQrMatrix, renderQrCodeSvg } from '../src/engine/qrCodeSvg.js';
-import { LiveClassroomSync, normalizeRoomCode, buildTopicForRoom, getPublicGameUrl } from '../src/engine/liveSync.js';
+import {
+  LiveClassroomSync,
+  normalizeRoomCode,
+  buildTopicForRoom,
+  getPublicGameUrl,
+  buildMqttConnectPacket,
+  buildMqttSubscribePacket,
+  buildMqttPublishPacket,
+  parseMqttPackets
+} from '../src/engine/liveSync.js';
 import { TelemetryStore } from '../src/engine/telemetryStore.js';
 
 function createMemoryStorage() {
@@ -29,12 +38,30 @@ test('QR Code SVG generator produce matriz cuadrada válida con patrones de bús
     assert.equal(matrix[0][n - 7 + i], true);
     assert.equal(matrix[n - 7][i], true);
   }
-  // Centro 3x3 del buscador superior izquierdo debe ser oscuro
   assert.equal(matrix[3][3], true);
 
   const svg = renderQrCodeSvg(url, { sizePx: 220 });
   assert.ok(svg.startsWith('<svg'));
   assert.ok(svg.includes('<path d="M'));
+});
+
+test('Codificador y decodificador binario MQTT 3.1.1 sobre WebSockets', () => {
+  const conn = buildMqttConnectPacket('pd_test_client');
+  assert.equal(conn[0], 0x10);
+
+  const sub = buildMqttSubscribePacket(1, 'panic_director_live_v3_clase/#');
+  assert.equal(sub[0], 0x82);
+
+  const samplePayload = JSON.stringify({ type: 'run_finish', room: 'CLASE', record: { id: 'r1', initials: 'VLF' } });
+  const pubRetained = buildMqttPublishPacket('panic_director_live_v3_clase/run/r1', samplePayload, { retain: true });
+  assert.equal(pubRetained[0], 0x31);
+
+  const decoded = parseMqttPackets(pubRetained);
+  assert.equal(decoded.length, 1);
+  assert.equal(decoded[0].type, 'publish');
+  assert.equal(decoded[0].retain, true);
+  assert.equal(decoded[0].topic, 'panic_director_live_v3_clase/run/r1');
+  assert.equal(decoded[0].payloadText, samplePayload);
 });
 
 test('LiveClassroomSync sincroniza en tiempo real run_start, run_finish y room_reset sin duplicados', async () => {
@@ -54,12 +81,12 @@ test('LiveClassroomSync sincroniza en tiempo real run_start, run_finish y room_r
     initialRoom: 'aula-2026',
     storage: memStorage,
     fetchImpl: mockFetch,
-    EventSourceImpl: null
+    WebSocketImpl: null
   });
 
   assert.equal(sync.roomCode, 'AULA-2026');
   assert.equal(normalizeRoomCode('  clase #1 '), 'CLASE1');
-  assert.ok(buildTopicForRoom('CLASE').includes('panic_director_live_v2_clase'));
+  assert.ok(buildTopicForRoom('CLASE').includes('panic_director_live_v3_clase'));
   assert.ok(getPublicGameUrl('CLASE').includes('room=CLASE'));
 
   // 1. Alumno inicia partida en su móvil

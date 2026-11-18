@@ -1,13 +1,19 @@
-// Motor de Sincronización en Tiempo Real para toda la clase (Nube Zero-Config + BroadcastChannel)
-// Permite que todos los alumnos escaneen el QR con su móvil y sus partidas aparezcan al instante en el Proyector.
+// Motor de Sincronización en Tiempo Real Multi-Canal (MQTT sobre WebSockets con Mensajes Retenidos + Cloud Fallback + BroadcastChannel)
+// Permite que todos los móviles que escaneen el QR envíen sus partidas en <100ms al Proyector, Telemetría y Ránking.
 
 import { normalizeInitials } from './telemetryStore.js';
 
 const ROOM_STORAGE_KEY = 'panic_director_room_code_v1';
 const CLIENT_ID_KEY = 'panic_director_client_id_v1';
 const RESET_AT_KEY_PREFIX = 'panic_director_reset_at_';
-const NTFY_BASE_URL = 'https://ntfy.sh';
-const ACTIVE_RUN_TTL_MS = 66000; // 60s de partida + margen
+const ACTIVE_RUN_TTL_MS = 66000;
+
+// Brokers públicos globales MQTT 3.1.1 sobre WebSockets (TLS / WSS, sin restricciones CORS)
+const DEFAULT_WSS_BROKERS = [
+  'wss://broker.emqx.io:8084/mqtt',
+  'wss://broker.hivemq.com:8884/mqtt',
+  'wss://test.mosquitto.org:8081/mqtt'
+];
 
 export function normalizeRoomCode(raw) {
   const cleaned = String(raw || '')
@@ -20,7 +26,7 @@ export function normalizeRoomCode(raw) {
 
 export function buildTopicForRoom(roomCode) {
   const norm = normalizeRoomCode(roomCode).toLowerCase();
-  return `panic_director_live_v2_${norm}`;
+  return `panic_director_live_v3_${norm}`;
 }
 
 export function getPublicGameUrl(roomCode) {
@@ -35,28 +41,172 @@ export function getPublicGameUrl(roomCode) {
   return `https://victorlesouquet-blip.github.io/PANIC-Director/?room=${encodeURIComponent(norm)}`;
 }
 
+// MARK: - Codificador / Decodificador binario ligero MQTT 3.1.1 para WebSockets
+
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
+
+function encodeRemainingLength(len) {
+  const bytes = [];
+  let x = len;
+  do {
+    let encodedByte = x % 128;
+    x = Math.floor(x / 128);
+    if (x > 0) encodedByte |= 0x80;
+    bytes.push(encodedByte);
+  } while (x > 0);
+  return bytes;
+}
+
+function encodeUtf8String(str) {
+  const utf8 = textEncoder.encode(str);
+  const out = new Uint8Array(2 + utf8.length);
+  out[0] = (utf8.length >>> 8) & 0xff;
+  out[1] = utf8.length & 0xff;
+  out.set(utf8, 2);
+  return out;
+}
+
+export function buildMqttConnectPacket(clientId) {
+  const protoName = encodeUtf8String('MQTT');
+  const protoLevel = 0x04; // MQTT 3.1.1
+  const connectFlags = 0x02; // Clean session
+  const keepAliveHi = 0x00;
+  const keepAliveLo = 0x2d; // 45s
+  const clientField = encodeUtf8String(clientId);
+
+  const remLen = protoName.length + 4 + clientField.length;
+  const remBytes = encodeRemainingLength(remLen);
+  const packet = new Uint8Array(1 + remBytes.length + remLen);
+
+  let idx = 0;
+  packet[idx++] = 0x10; // CONNECT
+  for (const b of remBytes) packet[idx++] = b;
+  packet.set(protoName, idx);
+  idx += protoName.length;
+  packet[idx++] = protoLevel;
+  packet[idx++] = connectFlags;
+  packet[idx++] = keepAliveHi;
+  packet[idx++] = keepAliveLo;
+  packet.set(clientField, idx);
+  return packet;
+}
+
+export function buildMqttSubscribePacket(packetId, topicFilter) {
+  const topicField = encodeUtf8String(topicFilter);
+  const remLen = 2 + topicField.length + 1;
+  const remBytes = encodeRemainingLength(remLen);
+  const packet = new Uint8Array(1 + remBytes.length + remLen);
+
+  let idx = 0;
+  packet[idx++] = 0x82; // SUBSCRIBE (QoS 1 en cabecera fija según estándar)
+  for (const b of remBytes) packet[idx++] = b;
+  packet[idx++] = (packetId >>> 8) & 0xff;
+  packet[idx++] = packetId & 0xff;
+  packet.set(topicField, idx);
+  idx += topicField.length;
+  packet[idx++] = 0x00; // Requested QoS 0
+  return packet;
+}
+
+export function buildMqttPublishPacket(topic, payloadStrOrBytes, { retain = false } = {}) {
+  const topicField = encodeUtf8String(topic);
+  const payloadBytes =
+    typeof payloadStrOrBytes === 'string'
+      ? textEncoder.encode(payloadStrOrBytes)
+      : payloadStrOrBytes instanceof Uint8Array
+        ? payloadStrOrBytes
+        : new Uint8Array(0);
+
+  const remLen = topicField.length + payloadBytes.length;
+  const remBytes = encodeRemainingLength(remLen);
+  const packet = new Uint8Array(1 + remBytes.length + remLen);
+
+  let idx = 0;
+  packet[idx++] = 0x30 | (retain ? 0x01 : 0x00); // PUBLISH QoS 0
+  for (const b of remBytes) packet[idx++] = b;
+  packet.set(topicField, idx);
+  idx += topicField.length;
+  packet.set(payloadBytes, idx);
+  return packet;
+}
+
+export function parseMqttPackets(buffer) {
+  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  const packets = [];
+  let offset = 0;
+
+  while (offset < bytes.length) {
+    const headerByte = bytes[offset++];
+    const packetType = headerByte >>> 4;
+    const flags = headerByte & 0x0f;
+
+    let multiplier = 1;
+    let remLen = 0;
+    let encodedByte = 0;
+    do {
+      if (offset >= bytes.length) return packets;
+      encodedByte = bytes[offset++];
+      remLen += (encodedByte & 0x7f) * multiplier;
+      multiplier *= 128;
+    } while ((encodedByte & 0x80) !== 0);
+
+    const endOffset = offset + remLen;
+    if (endOffset > bytes.length) break;
+
+    if (packetType === 2) {
+      // CONNACK
+      packets.push({ type: 'connack', returnCode: bytes[offset + 1] });
+    } else if (packetType === 3) {
+      // PUBLISH
+      const qos = (flags >>> 1) & 0x03;
+      const retain = (flags & 0x01) !== 0;
+      const topicLen = (bytes[offset] << 8) | bytes[offset + 1];
+      const topicStart = offset + 2;
+      const topic = textDecoder.decode(bytes.subarray(topicStart, topicStart + topicLen));
+      let payloadStart = topicStart + topicLen;
+      if (qos > 0) payloadStart += 2; // Packet ID si QoS > 0
+      const payloadBytes = bytes.subarray(payloadStart, endOffset);
+      const payloadText = payloadBytes.length > 0 ? textDecoder.decode(payloadBytes) : '';
+      packets.push({ type: 'publish', topic, payloadText, retain });
+    } else if (packetType === 9) {
+      packets.push({ type: 'suback' });
+    } else if (packetType === 13) {
+      packets.push({ type: 'pingresp' });
+    }
+
+    offset = endOffset;
+  }
+
+  return packets;
+}
+
+// MARK: - Clase principal LiveClassroomSync
+
 export class LiveClassroomSync {
   constructor(store, options = {}) {
     this.store = store;
-    this.fetchImpl = options.fetchImpl || (typeof fetch !== 'undefined' ? fetch.bind(globalThis) : null);
-    this.EventSourceImpl = options.EventSourceImpl || (typeof EventSource !== 'undefined' ? EventSource : null);
+    this.fetchImpl = options.fetchImpl !== undefined ? options.fetchImpl : (typeof fetch !== 'undefined' ? fetch.bind(globalThis) : null);
+    this.WebSocketImpl = options.WebSocketImpl !== undefined ? options.WebSocketImpl : (typeof WebSocket !== 'undefined' ? WebSocket : null);
     this.storage = options.storage !== undefined ? options.storage : (typeof window !== 'undefined' ? window.localStorage : null);
+    this.brokerUrls = options.brokerUrls || DEFAULT_WSS_BROKERS;
 
     this.clientId = this._loadOrCreateClientId();
     this.roomCode = normalizeRoomCode(options.initialRoom || this._detectInitialRoom());
     this.resetAtIso = this._loadResetAt(this.roomCode);
 
     this.connectionState = 'connecting'; // 'connecting' | 'live' | 'local'
-    this.activePlayers = new Map(); // key: clientId o initials -> { clientId, initials, avatar, mode, startedAt }
-    this.liveEvents = []; // últimos eventos recibidos en la sesión
+    this.activePlayers = new Map();
+    this.liveEvents = [];
     this.processedEventIds = new Set();
+    this.knownRunTopics = new Set();
     this.listeners = new Set();
     this.runToastListeners = new Set();
 
-    this._eventSource = null;
-    this._pollTimer = null;
+    this._sockets = new Map(); // brokerUrl -> { ws, ready, pingTimer, reconnectTimer }
     this._cleanupTimer = null;
     this._broadcastChannel = null;
+    this._stopped = false;
   }
 
   _loadOrCreateClientId() {
@@ -64,14 +214,14 @@ export class LiveClassroomSync {
       try {
         const saved = this.storage.getItem(CLIENT_ID_KEY);
         if (saved) return saved;
-        const created = `c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+        const created = `pd_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
         this.storage.setItem(CLIENT_ID_KEY, created);
         return created;
       } catch {
         // Ignorar
       }
     }
-    return `c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    return `pd_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
   }
 
   _detectInitialRoom() {
@@ -168,11 +318,13 @@ export class LiveClassroomSync {
     this.activePlayers.clear();
     this.liveEvents = [];
     this.processedEventIds.clear();
+    this.knownRunTopics.clear();
     this.reconnect();
     this.notify();
   }
 
   start() {
+    this._stopped = false;
     this._setupLocalChannel();
     this.reconnect();
     if (typeof setInterval !== 'undefined' && !this._cleanupTimer) {
@@ -187,18 +339,8 @@ export class LiveClassroomSync {
   }
 
   stop() {
-    if (this._eventSource) {
-      try {
-        this._eventSource.close();
-      } catch {
-        // Ignorar
-      }
-      this._eventSource = null;
-    }
-    if (this._pollTimer) {
-      clearInterval(this._pollTimer);
-      this._pollTimer = null;
-    }
+    this._stopped = true;
+    this._closeAllSockets();
     if (this._cleanupTimer) {
       clearInterval(this._cleanupTimer);
       this._cleanupTimer = null;
@@ -213,6 +355,19 @@ export class LiveClassroomSync {
     }
   }
 
+  _closeAllSockets() {
+    for (const entry of this._sockets.values()) {
+      if (entry.pingTimer) clearInterval(entry.pingTimer);
+      if (entry.reconnectTimer) clearTimeout(entry.reconnectTimer);
+      try {
+        entry.ws.close();
+      } catch {
+        // Ignorar
+      }
+    }
+    this._sockets.clear();
+  }
+
   _setupLocalChannel() {
     if (typeof BroadcastChannel !== 'undefined' && !this._broadcastChannel) {
       try {
@@ -223,112 +378,173 @@ export class LiveClassroomSync {
           }
         };
       } catch {
-        // Ignorar si BroadcastChannel no está soportado
+        // Ignorar
       }
     }
   }
 
   reconnect() {
-    if (this._eventSource) {
-      try {
-        this._eventSource.close();
-      } catch {
-        // Ignorar
-      }
-      this._eventSource = null;
-    }
-    if (this._pollTimer) {
-      clearInterval(this._pollTimer);
-      this._pollTimer = null;
-    }
-
+    this._closeAllSockets();
     this.connectionState = 'connecting';
     this.notify();
 
-    // 1. Descargar historial reciente de la sala en la nube (últimas 12h)
-    this.fetchHistory('12h');
-
-    // 2. Abrir stream SSE en tiempo real
-    const topic = buildTopicForRoom(this.roomCode);
-    if (this.EventSourceImpl) {
-      try {
-        const es = new this.EventSourceImpl(`${NTFY_BASE_URL}/${topic}/sse`);
-        this._eventSource = es;
-        es.onopen = () => {
-          this.connectionState = 'live';
-          this.notify();
-        };
-        es.onmessage = (event) => {
-          this.connectionState = 'live';
-          this._handleNtfyEnvelope(event.data, { isRealtime: true });
-        };
-        es.onerror = () => {
-          if (this.connectionState === 'connecting') {
-            this.connectionState = 'local';
-            this.notify();
-          }
-        };
-      } catch {
-        this.connectionState = 'local';
+    if (this.WebSocketImpl) {
+      for (const brokerUrl of this.brokerUrls) {
+        this._connectMqttBroker(brokerUrl);
       }
-    }
-
-    // 3. Polling ligero de respaldo cada 4.5s por si el móvil suspende SSE
-    if (typeof setInterval !== 'undefined' && this.fetchImpl) {
-      this._pollTimer = setInterval(() => {
-        this.fetchHistory('25s', { isRealtime: true });
-      }, 4500);
+    } else {
+      this.connectionState = 'local';
+      this.notify();
     }
   }
 
-  async fetchHistory(since = '12h', { isRealtime = false } = {}) {
-    if (!this.fetchImpl) return;
-    const topic = buildTopicForRoom(this.roomCode);
+  _roomTopicPrefix() {
+    return `${buildTopicForRoom(this.roomCode)}`;
+  }
+
+  _connectMqttBroker(brokerUrl) {
+    if (this._stopped || !this.WebSocketImpl) return;
+
+    let ws;
     try {
-      const res = await this.fetchImpl(`${NTFY_BASE_URL}/${topic}/json?poll=1&since=${encodeURIComponent(since)}`);
-      if (!res.ok) return;
-      this.connectionState = 'live';
-      const text = await res.text();
-      const lines = text.split('\n').filter((l) => l.trim().length > 0);
-      for (const line of lines) {
-        this._handleNtfyEnvelope(line, { isRealtime });
-      }
-      this.notify();
+      ws = new this.WebSocketImpl(brokerUrl, 'mqtt');
+      ws.binaryType = 'arraybuffer';
     } catch {
-      if (this.connectionState === 'connecting') {
+      return;
+    }
+
+    const entry = { ws, ready: false, pingTimer: null, reconnectTimer: null };
+    this._sockets.set(brokerUrl, entry);
+
+    ws.onopen = () => {
+      try {
+        const uniqueMqttClientId = `${this.clientId}_${Math.random().toString(36).slice(2, 6)}`;
+        ws.send(buildMqttConnectPacket(uniqueMqttClientId));
+      } catch {
+        // Ignorar
+      }
+    };
+
+    ws.onmessage = async (event) => {
+      try {
+        let buf = event.data;
+        if (typeof Blob !== 'undefined' && buf instanceof Blob) {
+          buf = await buf.arrayBuffer();
+        }
+        const packets = parseMqttPackets(buf);
+        for (const pkt of packets) {
+          if (pkt.type === 'connack' && pkt.returnCode === 0) {
+            entry.ready = true;
+            this.connectionState = 'live';
+            // Suscribirse a todos los sub-tópicos de la sala (incluye mensajes retenidos de partidas y reset)
+            const subFilter = `${this._roomTopicPrefix()}/#`;
+            ws.send(buildMqttSubscribePacket(1, subFilter));
+
+            // Keep-alive PINGREQ cada 25 segundos
+            if (entry.pingTimer) clearInterval(entry.pingTimer);
+            entry.pingTimer = setInterval(() => {
+              if (ws.readyState === 1) {
+                ws.send(new Uint8Array([0xc0, 0x00]));
+              }
+            }, 25000);
+
+            // Auto-sincronizar las partidas locales que este dispositivo ya haya jugado
+            this._syncLocalRecordsToBroker(ws);
+            this.notify();
+          } else if (pkt.type === 'publish') {
+            if (pkt.topic.includes('/run/')) {
+              this.knownRunTopics.add(pkt.topic);
+            }
+            if (!pkt.payloadText) continue;
+            try {
+              const parsed = JSON.parse(pkt.payloadText);
+              // Si no es retenido, es un evento en vivo recién emitido (<100ms)
+              this.ingestPayload(parsed, { isRealtime: !pkt.retain });
+            } catch {
+              // Ignorar JSON malformado
+            }
+          }
+        }
+      } catch {
+        // Ignorar error de paquete
+      }
+    };
+
+    const handleDisconnect = () => {
+      entry.ready = false;
+      if (entry.pingTimer) {
+        clearInterval(entry.pingTimer);
+        entry.pingTimer = null;
+      }
+      const anyReady = Array.from(this._sockets.values()).some((s) => s.ready);
+      if (!anyReady && !this._stopped) {
         this.connectionState = 'local';
         this.notify();
       }
+      if (!this._stopped && !entry.reconnectTimer) {
+        entry.reconnectTimer = setTimeout(() => {
+          entry.reconnectTimer = null;
+          this._connectMqttBroker(brokerUrl);
+        }, 3500);
+      }
+    };
+
+    ws.onerror = handleDisconnect;
+    ws.onclose = handleDisconnect;
+  }
+
+  _syncLocalRecordsToBroker(ws) {
+    if (!ws || ws.readyState !== 1) return;
+    const prefix = this._roomTopicPrefix();
+    const resetTime = this.resetAtIso ? new Date(this.resetAtIso).getTime() : 0;
+
+    // Publicar las últimas 25 partidas guardadas en este móvil/navegador con retain: true
+    const localRuns = this.store.records.slice(0, 25);
+    for (const rec of localRuns) {
+      const playedTime = new Date(rec.playedAt || 0).getTime();
+      if (resetTime && playedTime < resetTime) continue;
+
+      const payload = {
+        v: 1,
+        eventId: `finish_${rec.id}`,
+        type: 'run_finish',
+        room: this.roomCode,
+        clientId: this.clientId,
+        record: rec
+      };
+      const topic = `${prefix}/run/${rec.id}`;
+      this.knownRunTopics.add(topic);
+      try {
+        ws.send(buildMqttPublishPacket(topic, JSON.stringify(payload), { retain: true }));
+      } catch {
+        // Ignorar
+      }
     }
   }
 
-  _handleNtfyEnvelope(rawJsonLine, { isRealtime = false } = {}) {
-    try {
-      const env = JSON.parse(rawJsonLine);
-      if (env.event && env.event !== 'message') return;
-      if (env.id && this.processedEventIds.has(env.id)) return;
-      if (env.id) this.processedEventIds.add(env.id);
-
-      const bodyStr = env.message;
-      if (!bodyStr || typeof bodyStr !== 'string') return;
-      const payload = JSON.parse(bodyStr);
-      this.ingestPayload(payload, { isRealtime });
-    } catch {
-      // Ignorar mensajes que no sean JSON de telemetría
+  _publishMqtt(subTopic, payloadObj, { retain = false } = {}) {
+    const fullTopic = `${this._roomTopicPrefix()}/${subTopic}`;
+    if (subTopic.startsWith('run/')) {
+      this.knownRunTopics.add(fullTopic);
     }
+    const packet = buildMqttPublishPacket(fullTopic, JSON.stringify(payloadObj), { retain });
+    let sentCount = 0;
+    for (const entry of this._sockets.values()) {
+      if (entry.ready && entry.ws.readyState === 1) {
+        try {
+          entry.ws.send(packet);
+          sentCount++;
+        } catch {
+          // Ignorar
+        }
+      }
+    }
+    return sentCount > 0;
   }
 
   ingestPayload(payload, { isRealtime = false } = {}) {
     if (!payload || typeof payload !== 'object') return false;
     if (payload.room && normalizeRoomCode(payload.room) !== this.roomCode) return false;
-
-    const eventKey = payload.eventId || (payload.record && payload.record.id) || null;
-    if (eventKey && this.processedEventIds.has(eventKey)) {
-      return false;
-    }
-    if (eventKey) {
-      this.processedEventIds.add(eventKey);
-    }
 
     if (payload.type === 'room_reset' && payload.resetAt) {
       if (!this.resetAtIso || new Date(payload.resetAt) > new Date(this.resetAtIso)) {
@@ -336,10 +552,19 @@ export class LiveClassroomSync {
         this.store.clearAll();
         this.activePlayers.clear();
         this.liveEvents = [];
+        this.processedEventIds.clear();
         this.notify();
         return true;
       }
       return false;
+    }
+
+    const eventKey = payload.eventId || (payload.record && payload.record.id) || null;
+    if (eventKey && this.processedEventIds.has(eventKey)) {
+      return false;
+    }
+    if (eventKey) {
+      this.processedEventIds.add(eventKey);
     }
 
     if (payload.type === 'run_start') {
@@ -369,7 +594,6 @@ export class LiveClassroomSync {
         return false;
       }
 
-      // Quitar de jugadores activos en arena
       if (payload.clientId) this.activePlayers.delete(payload.clientId);
       const normInit = normalizeInitials(rec.initials);
       for (const [k, v] of this.activePlayers.entries()) {
@@ -453,11 +677,11 @@ export class LiveClassroomSync {
     };
     this.ingestPayload(payload, { isRealtime: true });
     this._broadcastLocal(payload);
-    await this._postToCloud(payload);
+    this._publishMqtt(`live/${this.clientId}`, payload, { retain: false });
+    await this._postToCloudFallback(payload);
   }
 
   async publishRunFinish(record) {
-    // Limpiar jugador activo local
     this.activePlayers.delete(this.clientId);
     this._pushLiveEvent(record);
 
@@ -470,7 +694,11 @@ export class LiveClassroomSync {
       record
     };
     this._broadcastLocal(payload);
-    await this._postToCloud(payload);
+    // 1. Publicar con retain: true para que persista en el broker de la sala
+    this._publishMqtt(`run/${record.id}`, payload, { retain: true });
+    // 2. Publicar también sin retain como evento instantáneo para disparar el Toast en vivo
+    this._publishMqtt('events', payload, { retain: false });
+    await this._postToCloudFallback(payload);
     this.notify();
   }
 
@@ -480,6 +708,7 @@ export class LiveClassroomSync {
     this.store.clearAll();
     this.activePlayers.clear();
     this.liveEvents = [];
+    this.processedEventIds.clear();
 
     const payload = {
       v: 1,
@@ -490,22 +719,35 @@ export class LiveClassroomSync {
       resetAt
     };
     this._broadcastLocal(payload);
-    await this._postToCloud(payload);
+
+    // Guardar marca de reset retenida en los brokers
+    this._publishMqtt('meta/reset', payload, { retain: true });
+
+    // Limpiar mensajes retenidos conocidos de partidas anteriores
+    for (const topic of this.knownRunTopics) {
+      const clearPkt = buildMqttPublishPacket(topic, new Uint8Array(0), { retain: true });
+      for (const entry of this._sockets.values()) {
+        if (entry.ready && entry.ws.readyState === 1) {
+          try {
+            entry.ws.send(clearPkt);
+          } catch {
+            // Ignorar
+          }
+        }
+      }
+    }
+    this.knownRunTopics.clear();
+
+    await this._postToCloudFallback(payload);
     this.notify();
   }
 
   async publishRoomSnapshot() {
-    if (this.store.records.length === 0) return;
-    const payload = {
-      v: 1,
-      eventId: `snap_${this.clientId}_${Date.now()}`,
-      type: 'room_snapshot',
-      room: this.roomCode,
-      clientId: this.clientId,
-      records: this.store.records.slice(0, 60)
-    };
-    this._broadcastLocal(payload);
-    await this._postToCloud(payload);
+    for (const entry of this._sockets.values()) {
+      if (entry.ready && entry.ws.readyState === 1) {
+        this._syncLocalRecordsToBroker(entry.ws);
+      }
+    }
   }
 
   _broadcastLocal(payload) {
@@ -518,11 +760,11 @@ export class LiveClassroomSync {
     }
   }
 
-  async _postToCloud(payload) {
+  async _postToCloudFallback(payload) {
     if (!this.fetchImpl) return false;
     const topic = buildTopicForRoom(this.roomCode);
     try {
-      const res = await this.fetchImpl(`${NTFY_BASE_URL}/${topic}`, {
+      const res = await this.fetchImpl(`https://ntfy.sh/${topic}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'text/plain;charset=UTF-8'
@@ -535,7 +777,7 @@ export class LiveClassroomSync {
         return true;
       }
     } catch {
-      // Ignorar fallo puntual de red; la partida ya quedó guardada localmente
+      // Ignorar si ntfy está bloqueado o con límite; MQTT WSS ya se encarga
     }
     return false;
   }

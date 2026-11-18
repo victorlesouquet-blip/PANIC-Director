@@ -304,6 +304,19 @@ export function mountPlayersView(root, { store, initialPlayerInitials = null, on
   };
 
   render();
+
+  const unsub = liveSync
+    ? liveSync.subscribe(() => {
+        const searchFocused = document.activeElement?.id === 'input-player-search';
+        if (!searchFocused) {
+          render();
+        }
+      })
+    : null;
+
+  return () => {
+    if (unsub) unsub();
+  };
 }
 
 function buildLeaderCardHtml(leader, sortDef, modeFilterDef) {

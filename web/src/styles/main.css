@@ -1919,6 +1919,18 @@ textarea:focus-visible {
   font-family: var(--font-mono);
 }
 
+.btn-resync-inline {
+  margin-left: auto;
+  padding: 4px 9px;
+  border-radius: 6px;
+  background: rgba(52, 245, 197, 0.16);
+  border: 1px solid rgba(52, 245, 197, 0.42);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--grace-jade);
+}
+
 .btn-projector-banner {
   width: 100%;
   display: flex;
