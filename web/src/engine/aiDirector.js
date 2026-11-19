@@ -134,10 +134,10 @@ export class Classic1985Engine {
       }
     }
 
-    // Progresión matemática estrictamente creciente con el tiempo (0.60s -> 0.133s, 24 -> 74 enemigos, 1.08x -> 1.68x)
-    const interval = 0.60 / (1.0 + 3.5 * progress);
-    const maxEnemies = 24 + Math.trunc(50.0 * progress);
-    const speedMultiplier = 1.08 + 0.60 * progress;
+    // Progresión matemática estrictamente creciente con el tiempo (0.48s -> 0.10s, 32 -> 92 enemigos, 1.15x -> 1.80x)
+    const interval = 0.48 / (1.0 + 3.8 * progress);
+    const maxEnemies = 32 + Math.trunc(60.0 * progress);
+    const speedMultiplier = 1.15 + 0.65 * progress;
 
     const swarmW = Math.max(0.38, 0.74 - 0.36 * progress);
     const tankW = 0.20 + 0.11 * progress;
@@ -193,9 +193,9 @@ export class Adaptive2026Director {
     this.messageHoldTimer = 0.0;
     this.currentMessage = 'IA activa → Calibrando presión';
     this.currentState = Regime.OPTIMAL_FLOW;
-    this.hardestSpawnInterval = 0.41;
-    this.highestMaxEnemies = 38;
-    this.highestSpeedMultiplier = 1.12;
+    this.hardestSpawnInterval = 0.36;
+    this.highestMaxEnemies = 46;
+    this.highestSpeedMultiplier = 1.18;
   }
 
   evaluate(input) {
@@ -215,11 +215,11 @@ export class Adaptive2026Director {
 
     // Histéresis para evitar cambios nerviosos de estado
     let targetRegime;
-    if (stress >= 88.0 || hp <= 0.28) {
+    if (stress >= 88.0 || hp <= 0.26) {
       targetRegime = Regime.EMERGENCY_RESCUE;
-    } else if (stress >= 68.0 || (this.currentState === Regime.EMERGENCY_RESCUE && stress >= 62.0)) {
+    } else if (stress >= 70.0 || (this.currentState === Regime.EMERGENCY_RESCUE && stress >= 64.0)) {
       targetRegime = Regime.HIGH_STRESS_RELIEF;
-    } else if (stress < 38.0 || (this.currentState === Regime.LOW_STRESS_PUSH && stress < 45.0)) {
+    } else if (stress < 46.0 || (this.currentState === Regime.LOW_STRESS_PUSH && stress < 52.0)) {
       targetRegime = Regime.LOW_STRESS_PUSH;
     } else {
       targetRegime = Regime.OPTIMAL_FLOW;
@@ -228,25 +228,25 @@ export class Adaptive2026Director {
     const regimeChanged = targetRegime !== this.currentState;
     this.currentState = targetRegime;
 
-    // Decisión táctica frecuente de Gotas de Gracia (sin frenar la presión enemiga)
+    // Curas escasas y tácticas (sólo cuando el jugador realmente peligra)
     let dropMedkit = false;
-    const needsCriticalSave = hp <= 0.44;
-    const needsTacticalHeal = (hp <= 0.74 && stress >= 45.0) || hp <= 0.60;
-    const needsFlowSustain = t >= 9.0 && hp <= 0.88;
+    const needsCriticalSave = hp <= 0.36;
+    const needsTacticalHeal = (hp <= 0.56 && stress >= 56.0) || hp <= 0.45;
+    const needsFlowSustain = t >= 18.0 && hp <= 0.65;
 
     const emergencyReady = needsCriticalSave && this.timeSinceLastMedkit >= 3.4;
-    const tacticalReady = needsTacticalHeal && this.timeSinceLastMedkit >= 4.8;
-    const sustainReady = needsFlowSustain && this.timeSinceLastMedkit >= 6.4;
+    const tacticalReady = needsTacticalHeal && this.timeSinceLastMedkit >= 8.2;
+    const sustainReady = needsFlowSustain && this.timeSinceLastMedkit >= 12.5;
 
-    if (input.activeMedkitCount < 3 && (emergencyReady || tacticalReady || sustainReady)) {
+    if (input.activeMedkitCount < 2 && (emergencyReady || tacticalReady || sustainReady)) {
       dropMedkit = true;
       this.timeSinceLastMedkit = 0.0;
     }
 
-    // Suelo progresivo con el tiempo
-    const timeBaseInterval = 0.41 / (1.0 + 1.56 * progress);
-    const timeBaseMaxEnemies = 38 + Math.round(30.0 * progress);
-    const timeBaseSpeed = 1.12 + 0.46 * progress;
+    // Suelo progresivo con el tiempo (más intenso)
+    const timeBaseInterval = 0.36 / (1.0 + 1.85 * progress);
+    const timeBaseMaxEnemies = 46 + Math.round(44.0 * progress);
+    const timeBaseSpeed = 1.18 + 0.52 * progress;
 
     let candidateInterval;
     let candidateMaxEnemies;
@@ -268,7 +268,7 @@ export class Adaptive2026Director {
         tankW = 0.18 + 0.08 * progress;
         stalkerW = 0.12 + 0.16 * progress;
         safeAngle = escapeAngle;
-        safeHalfCone = Math.PI * 0.25;
+        safeHalfCone = Math.PI * 0.22;
         suppressLunges = true;
         interventionActive = true;
         const msg = dropMedkit
@@ -286,7 +286,7 @@ export class Adaptive2026Director {
         tankW = 0.22 + 0.08 * progress;
         stalkerW = 0.16 + 0.12 * progress;
         safeAngle = escapeAngle;
-        safeHalfCone = Math.PI * 0.20;
+        safeHalfCone = Math.PI * 0.18;
         suppressLunges = true;
         interventionActive = true;
         let msg;
@@ -302,12 +302,14 @@ export class Adaptive2026Director {
       }
 
       case Regime.LOW_STRESS_PUSH: {
-        candidateInterval = Math.max(0.12, Math.min(0.26 * (1.0 - 0.35 * progress), timeBaseInterval * 0.74));
-        candidateMaxEnemies = Math.max(46 + Math.round(16.0 * progress), timeBaseMaxEnemies + 7);
-        candidateSpeed = Math.max(1.28 + 0.32 * progress, timeBaseSpeed + 0.13);
-        swarmW = 0.40;
-        tankW = 0.30;
-        stalkerW = t > 4.0 ? 0.30 : 0.14;
+        // Cuanto más bajo el estrés, más rápido y numeroso el enjambre
+        const lowFactor = Math.max(0.0, Math.min(1.0, (52.0 - stress) / 44.0));
+        candidateInterval = Math.max(0.08, timeBaseInterval * (0.76 - 0.36 * lowFactor));
+        candidateMaxEnemies = Math.round(timeBaseMaxEnemies * (1.20 + 0.70 * lowFactor));
+        candidateSpeed = timeBaseSpeed + 0.12 + 0.18 * lowFactor;
+        swarmW = 0.38;
+        tankW = 0.31;
+        stalkerW = t > 4.0 ? 0.31 : 0.16;
         safeAngle = null;
         safeHalfCone = 0;
         suppressLunges = false;
@@ -315,10 +317,10 @@ export class Adaptive2026Director {
         let msg;
         if (dropMedkit) {
           msg = 'Desgaste detectado → Gota de Gracia';
-        } else if (t > 8.0) {
-          msg = 'Estrés bajo → Escalamiento letal';
+        } else if (stress < 24.0) {
+          msg = 'Estrés mínimo → Enjambre masivo';
         } else {
-          msg = 'Ritmo cómodo → Acelerando amenaza';
+          msg = 'Estrés bajo → Escalamiento letal';
         }
         this.#updateMessage(msg, dropMedkit || regimeChanged);
         break;
@@ -327,12 +329,12 @@ export class Adaptive2026Director {
       case Regime.OPTIMAL_FLOW:
       default: {
         const isClimax = t >= 42.0;
-        candidateInterval = timeBaseInterval * (isClimax ? 0.90 : 1.0);
-        candidateMaxEnemies = timeBaseMaxEnemies + (isClimax ? 4 : 0);
-        candidateSpeed = timeBaseSpeed + (isClimax ? 0.05 : 0.0);
-        swarmW = Math.max(0.38, 0.52 - 0.14 * progress);
-        tankW = 0.26 + 0.06 * progress;
-        stalkerW = t > 5.0 ? (0.22 + 0.08 * progress) : 0.12;
+        candidateInterval = timeBaseInterval * (isClimax ? 0.86 : 0.96);
+        candidateMaxEnemies = timeBaseMaxEnemies + (isClimax ? 8 : 3);
+        candidateSpeed = timeBaseSpeed + (isClimax ? 0.08 : 0.02);
+        swarmW = Math.max(0.36, 0.50 - 0.14 * progress);
+        tankW = 0.27 + 0.06 * progress;
+        stalkerW = t > 5.0 ? (0.23 + 0.08 * progress) : 0.14;
         safeAngle = null;
         safeHalfCone = 0;
         suppressLunges = false;
@@ -396,9 +398,9 @@ export class HybridMixDirector {
     this.currentMessage = 'Mix 85×26 → Reloj fijo + IA';
     this.wasInClockSurge = false;
     this.hybridMedkitGapTimer = 2.0;
-    this.hardestSpawnInterval = 0.41;
-    this.highestMaxEnemies = 38;
-    this.highestSpeedMultiplier = 1.15;
+    this.hardestSpawnInterval = 0.36;
+    this.highestMaxEnemies = 46;
+    this.highestSpeedMultiplier = 1.20;
   }
 
   evaluate(input) {
@@ -422,46 +424,47 @@ export class HybridMixDirector {
     const surgeJustEnded = prevInSurge && !inClockSurge;
     this.wasInClockSurge = inClockSurge;
 
-    const timeFloorInterval = 0.41 / (1.0 + 2.42 * progress);
-    const timeFloorEnemies = 38 + Math.round(36.0 * progress);
-    const timeFloorSpeed = 1.15 + 0.55 * progress;
+    const timeFloorInterval = 0.36 / (1.0 + 2.55 * progress);
+    const timeFloorEnemies = 46 + Math.round(46.0 * progress);
+    const timeFloorSpeed = 1.20 + 0.60 * progress;
+    const lowFactor = Math.max(0.0, Math.min(1.0, (48.0 - stress) / 40.0));
 
     let rawInterval;
     if (inClockSurge) {
-      rawInterval = Math.min(timeFloorInterval, Math.min(baseFixed.spawnInterval, adaptive.spawnInterval)) * 0.72;
-    } else if (stress < 42.0) {
-      rawInterval = Math.min(timeFloorInterval, Math.min(baseFixed.spawnInterval, adaptive.spawnInterval)) * 0.90;
+      rawInterval = Math.min(timeFloorInterval, Math.min(baseFixed.spawnInterval, adaptive.spawnInterval)) * 0.68;
+    } else if (stress < 48.0) {
+      rawInterval = Math.min(timeFloorInterval, Math.min(baseFixed.spawnInterval, adaptive.spawnInterval)) * (0.88 - 0.30 * lowFactor);
     } else {
       rawInterval = Math.min(timeFloorInterval, baseFixed.spawnInterval * 0.45 + adaptive.spawnInterval * 0.55);
     }
-    const candidateInterval = Math.max(0.11, rawInterval);
+    const candidateInterval = Math.max(0.08, rawInterval);
 
     const candidateMaxEnemies =
       Math.max(timeFloorEnemies, Math.max(baseFixed.maxActiveEnemies, adaptive.maxActiveEnemies)) +
-      (inClockSurge ? 6 : 2);
+      (inClockSurge ? 12 : Math.round(4 + 14 * lowFactor));
 
     const speedBase = Math.max(
       timeFloorSpeed,
       baseFixed.enemySpeedMultiplier * 0.48 + adaptive.enemySpeedMultiplier * 0.52
     );
-    const candidateSpeed = speedBase + (inClockSurge ? 0.10 : 0.03);
+    const candidateSpeed = speedBase + (inClockSurge ? 0.12 : 0.04 + 0.08 * lowFactor);
 
     this.hardestSpawnInterval = Math.min(this.hardestSpawnInterval, candidateInterval);
     this.highestMaxEnemies = Math.max(this.highestMaxEnemies, candidateMaxEnemies);
     this.highestSpeedMultiplier = Math.max(this.highestSpeedMultiplier, candidateSpeed);
 
     const partialEscapeAngle =
-      !inClockSurge && (stress >= 72.0 || input.playerHPNormalized <= 0.30)
+      !inClockSurge && (stress >= 74.0 || input.playerHPNormalized <= 0.28)
         ? adaptive.safeEscapeCenterAngle
         : null;
-    const partialHalfCone = partialEscapeAngle !== null ? Math.PI * 0.17 : 0.0;
+    const partialHalfCone = partialEscapeAngle !== null ? Math.PI * 0.16 : 0.0;
     const suppressLunges = !inClockSurge && adaptive.suppressSimultaneousLunges;
 
-    const fixedTrigger = baseFixed.spawnEmergencyMedkit && input.playerHPNormalized <= 0.94;
-    const postSurgeTrigger = surgeJustEnded && input.playerHPNormalized <= 0.88;
+    const fixedTrigger = baseFixed.spawnEmergencyMedkit && input.playerHPNormalized <= 0.72;
+    const postSurgeTrigger = surgeJustEnded && input.playerHPNormalized <= 0.68;
     const wantsMedkit = adaptive.spawnEmergencyMedkit || fixedTrigger || postSurgeTrigger;
-    const minGap = input.playerHPNormalized <= 0.42 ? 1.5 : 2.3;
-    const dropMedkit = wantsMedkit && input.activeMedkitCount < 3 && this.hybridMedkitGapTimer >= minGap;
+    const minGap = input.playerHPNormalized <= 0.35 ? 3.0 : 5.2;
+    const dropMedkit = wantsMedkit && input.activeMedkitCount < 2 && this.hybridMedkitGapTimer >= minGap;
     if (dropMedkit) {
       this.hybridMedkitGapTimer = 0.0;
     }
@@ -501,7 +504,7 @@ export class HybridMixDirector {
       safeEscapeHalfConeRadians: partialHalfCone,
       suppressSimultaneousLunges: suppressLunges,
       spawnEmergencyMedkit: dropMedkit,
-      medkitBiasAhead: adaptive.spawnEmergencyMedkit || input.playerHPNormalized < 0.78,
+      medkitBiasAhead: adaptive.spawnEmergencyMedkit || input.playerHPNormalized < 0.72,
       microMessage: this.currentMessage,
       isInterventionActive: inClockSurge || dropMedkit || adaptive.isInterventionActive
     };
@@ -522,9 +525,9 @@ export class UnifiedProgressiveDirector {
     this.phase1Engine.reset();
     this.phase2Engine.reset();
     this.phase3Engine.reset();
-    this.hardestSpawnInterval = 0.60;
-    this.highestMaxEnemies = 24;
-    this.highestSpeedMultiplier = 1.08;
+    this.hardestSpawnInterval = 0.48;
+    this.highestMaxEnemies = 32;
+    this.highestSpeedMultiplier = 1.15;
   }
 
   evaluate(input) {
@@ -565,9 +568,9 @@ export class UnifiedProgressiveDirector {
     }
 
     // Rampa global monotónica durante los 120 segundos (cada tramo incrementa la dificultad)
-    const floorInterval = 0.58 / (1.0 + 3.6 * globalProgress);
-    const floorEnemies = 24 + Math.round(54.0 * globalProgress);
-    const floorSpeed = 1.08 + 0.62 * globalProgress;
+    const floorInterval = 0.48 / (1.0 + 3.9 * globalProgress);
+    const floorEnemies = 32 + Math.round(70.0 * globalProgress);
+    const floorSpeed = 1.15 + 0.68 * globalProgress;
 
     const candidateInterval = Math.min(rawDirective.spawnInterval, floorInterval);
     const candidateEnemies = Math.max(rawDirective.maxActiveEnemies, floorEnemies);

@@ -361,3 +361,59 @@ test('Sistema de mejoras por nivel, 5 rarezas, bonificaciones iniciales de avata
   assert.ok(navHtml.includes('CLASE'));
 });
 
+
+
+test('Escalado inverso al estrés: cuanto menor el estrés, más enemigos, más velocidad y menor intervalo', async () => {
+  const mkInput = (stressIndex, elapsedTime = 10) => ({
+    elapsedTime,
+    dt: 0.1,
+    stressIndex,
+    playerHPNormalized: 1.0,
+    playerVelocity: { dx: 120, dy: 0 },
+    activeEnemyCount: 5,
+    activeMedkitCount: 0
+  });
+
+  const adaptiveLow = new Adaptive2026Director().evaluate(mkInput(10));
+  const adaptiveMid = new Adaptive2026Director().evaluate(mkInput(48));
+  assert.ok(adaptiveLow.maxActiveEnemies > adaptiveMid.maxActiveEnemies);
+  assert.ok(adaptiveLow.enemySpeedMultiplier > adaptiveMid.enemySpeedMultiplier);
+  assert.ok(adaptiveLow.spawnInterval < adaptiveMid.spawnInterval);
+
+  const hybridLow = new HybridMixDirector().evaluate(mkInput(10));
+  const hybridMid = new HybridMixDirector().evaluate(mkInput(48));
+  assert.ok(hybridLow.maxActiveEnemies > hybridMid.maxActiveEnemies);
+  assert.ok(hybridLow.enemySpeedMultiplier > hybridMid.enemySpeedMultiplier);
+  assert.ok(hybridLow.spawnInterval < hybridMid.spawnInterval);
+});
+
+test('Bestiario y 4 Jefes Finale usan 14 proyectiles distintos (8 ficticios para Jefes + 6 de criaturas)', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { fileURLToPath } = await import('node:url');
+  const meshesUrl = new URL('../src/scene/meshes3d.js', import.meta.url);
+  const arenaUrl = new URL('../src/scene/PanicArena3D.js', import.meta.url);
+  const meshesSrc = readFileSync(fileURLToPath(meshesUrl), 'utf8');
+  const arenaSrc = readFileSync(fileURLToPath(arenaUrl), 'utf8');
+
+  const expectedKinds = [
+    'fireball',
+    'stone',
+    'arrow',
+    'dagger',
+    'flail_orb',
+    'solar_bolt',
+    'pyro_singularity',
+    'anvil_prism',
+    'astral_helix',
+    'seraph_eye',
+    'void_hourglass',
+    'abyss_sigil',
+    'chronos_crown',
+    'eclipse_star'
+  ];
+
+  for (const kind of expectedKinds) {
+    assert.ok(meshesSrc.includes(`'${kind}'`), `Falta renderizado 3D del proyectil '${kind}' en meshes3d.js`);
+    assert.ok(arenaSrc.includes(`'${kind}'`), `Falta disparo del proyectil '${kind}' en PanicArena3D.js`);
+  }
+});

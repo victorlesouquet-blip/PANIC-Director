@@ -1245,15 +1245,453 @@ export class InstancedArenaPools {
     this.playerProjMesh.setColorAt(i, color);
   }
 
-  addEnemyProjectile(x, y, angle) {
+  addEnemyProjectile(bolt) {
+    const x = bolt.x;
+    const z = -bolt.y;
+    const angle = bolt.angle || 0;
+    const kind = bolt.kind || 'stone';
+    const age = bolt.age || 0;
+    const sc = bolt.scale || 1.0;
+    const cosA = Math.cos(angle);
+    const sinA = Math.sin(angle);
+
+    // --- PROYECTILES DE CRIATURAS (Piedras, Bolas de Fuego, Flechas, Dagas, Manguales, Virotes) ---
+    if (kind === 'fireball') {
+      // Bola de Fuego: núcleo esférico amarillo-ámbar + corona de llamas octogonal giratoria + halo naranja
+      if (this.cProjSphere >= POOL_CAPS.ENEMY_PROJ || this.cSpecCore >= POOL_CAPS.SPECIAL) {
+        return;
+      }
+      this.addGlow(x, 1.2, z, 28 * sc, this.colOrange, 0.72);
+      const si = this.cProjSphere++;
+      const pulse = 1.0 + Math.sin(age * 24) * 0.14;
+      _pos.set(x, 14, z);
+      _quat.identity();
+      _scale.setScalar(5.0 * sc * pulse);
+      _mat4.compose(_pos, _quat, _scale);
+      this.projSphereMesh.setMatrixAt(si, _mat4);
+      this.projSphereMesh.setColorAt(si, this.colAmber);
+
+      const fi = this.cSpecCore++;
+      _euler.set(age * 9, age * 11, 0, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.set(6.5 * sc * pulse, 6.5 * sc * pulse, 6.5 * sc * pulse);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specCoreMesh.setMatrixAt(fi, _mat4);
+      this.specCoreMesh.setColorAt(fi, this.colOrange);
+      return;
+    }
+
+    if (kind === 'stone') {
+      // Piedra / Roca dentada girando en los 3 ejes
+      if (this.cProjStone >= POOL_CAPS.ENEMY_PROJ) return;
+      const si = this.cProjStone++;
+      _pos.set(x, 14, z);
+      _euler.set(age * 7.5, age * 5.5, age * 4.0, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.set(5.4 * sc, 4.2 * sc, 4.9 * sc);
+      _mat4.compose(_pos, _quat, _scale);
+      this.projStoneMesh.setMatrixAt(si, _mat4);
+      this.projStoneMesh.setColorAt(si, this.colStone);
+      return;
+    }
+
+    if (kind === 'arrow') {
+      // Flecha Espectral: asta alargada + punta afilada cónica + pluma trasera
+      if (
+        this.cSpecBody >= POOL_CAPS.SPECIAL ||
+        this.cSpecCone + 2 > POOL_CAPS.SPECIAL
+      ) {
+        return;
+      }
+      const bi = this.cSpecBody++;
+      _pos.set(x, 14, z);
+      _euler.set(0, angle, 0, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.set(13.5 * sc, 1.3 * sc, 1.3 * sc);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specBodyMesh.setMatrixAt(bi, _mat4);
+      this.specBodyMesh.setColorAt(bi, this.colColdSilver);
+
+      const tip = this.cSpecCone++;
+      _pos.set(x + cosA * 7.5 * sc, 14, z - sinA * 7.5 * sc);
+      _euler.set(0, angle, -Math.PI * 0.5, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.set(2.6 * sc, 3.8 * sc, 2.6 * sc);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specConeMesh.setMatrixAt(tip, _mat4);
+      this.specConeMesh.setColorAt(tip, this.colCyan);
+
+      const fletch = this.cSpecCone++;
+      _pos.set(x - cosA * 6.5 * sc, 14, z + sinA * 6.5 * sc);
+      _scale.set(2.2 * sc, 2.6 * sc, 2.2 * sc);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specConeMesh.setMatrixAt(fletch, _mat4);
+      this.specConeMesh.setColorAt(fletch, this.colIvory);
+      return;
+    }
+
+    if (kind === 'dagger') {
+      // Daga Abisal giratoria tipo shuriken violeta
+      if (this.cSpecCore >= POOL_CAPS.SPECIAL || this.cSpecWing >= POOL_CAPS.SPECIAL) return;
+      this.addGlow(x, 1.0, z, 22 * sc, this.colPurple, 0.55);
+      const ci = this.cSpecCore++;
+      _pos.set(x, 14, z);
+      _euler.set(0, age * 18, 0, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.set(7.5 * sc, 1.6 * sc, 2.6 * sc);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specCoreMesh.setMatrixAt(ci, _mat4);
+      this.specCoreMesh.setColorAt(ci, this.colPurple);
+
+      const wi = this.cSpecWing++;
+      _euler.set(Math.PI * 0.5, age * 18, 0, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.setScalar(0.55 * sc);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specWingMesh.setMatrixAt(wi, _mat4);
+      this.specWingMesh.setColorAt(wi, this.colVermilion);
+      return;
+    }
+
+    if (kind === 'flail_orb') {
+      // Bola de hierro con púas del Flagelante
+      if (this.cProjSphere >= POOL_CAPS.ENEMY_PROJ || this.cSpecCore >= POOL_CAPS.SPECIAL) return;
+      const si = this.cProjSphere++;
+      _pos.set(x, 14, z);
+      _euler.set(age * 9, age * 6, 0, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.setScalar(5.6 * sc);
+      _mat4.compose(_pos, _quat, _scale);
+      this.projSphereMesh.setMatrixAt(si, _mat4);
+      this.projSphereMesh.setColorAt(si, this.colIron);
+
+      const sp = this.cSpecCore++;
+      _scale.set(8.2 * sc, 3.2 * sc, 3.2 * sc);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specCoreMesh.setMatrixAt(sp, _mat4);
+      this.specCoreMesh.setColorAt(sp, this.colVermilion);
+      return;
+    }
+
+    if (kind === 'solar_bolt') {
+      // Virote de Eclipse Dorado-Púrpura
+      if (this.cSpecCore >= POOL_CAPS.SPECIAL || this.cSpecRing >= POOL_CAPS.SPECIAL) return;
+      this.addGlow(x, 1.1, z, 24 * sc, this.colGold, 0.58);
+      const ci = this.cSpecCore++;
+      _pos.set(x, 14, z);
+      _euler.set(0, angle, -Math.PI * 0.5, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.set(3.2 * sc, 8.8 * sc, 3.2 * sc);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specCoreMesh.setMatrixAt(ci, _mat4);
+      this.specCoreMesh.setColorAt(ci, this.colAmber);
+
+      const ri = this.cSpecRing++;
+      _euler.set(age * 10, angle, 0, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.setScalar(6.5 * sc);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specRingMesh.setMatrixAt(ri, _mat4);
+      this.specRingMesh.setColorAt(ri, this.colPurple);
+      return;
+    }
+
+    // --- PROYECTILES FICTICIOS DE LOS 4 BOSSES (No existen en la vida real) ---
+
+    if (kind === 'pyro_singularity') {
+      // Boss 1 Ficticio: Singularidad de Magma Vivo (Poliedro incandescente con doble anillo volcánico ortogonal)
+      if (this.cSpecCore >= POOL_CAPS.SPECIAL || this.cSpecRing + 2 > POOL_CAPS.SPECIAL) return;
+      this.addGlow(x, 1.2, z, 38 * sc, this.colOrange, 0.80);
+      const pulse = 1.0 + Math.sin(age * 20) * 0.16;
+      const ci = this.cSpecCore++;
+      _pos.set(x, 15, z);
+      _euler.set(age * 6, age * 8, 0, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.setScalar(6.6 * sc * pulse);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specCoreMesh.setMatrixAt(ci, _mat4);
+      this.specCoreMesh.setColorAt(ci, this.colAmber);
+
+      const r1 = this.cSpecRing++;
+      _euler.set(age * 9, 0, age * 5, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.setScalar(9.6 * sc * pulse);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specRingMesh.setMatrixAt(r1, _mat4);
+      this.specRingMesh.setColorAt(r1, this.colOrange);
+
+      const r2 = this.cSpecRing++;
+      _euler.set(-age * 7, age * 9, Math.PI * 0.5, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.setScalar(8.0 * sc * pulse);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specRingMesh.setMatrixAt(r2, _mat4);
+      this.specRingMesh.setColorAt(r2, this.colVermilion);
+      return;
+    }
+
+    if (kind === 'anvil_prism') {
+      // Boss 1 Ficticio: Runa de Basalto Flotante (Monolito giratorio rodeado de corona rúnica)
+      if (
+        this.cSpecBody >= POOL_CAPS.SPECIAL ||
+        this.cSpecRing >= POOL_CAPS.SPECIAL ||
+        this.cSpecCore >= POOL_CAPS.SPECIAL
+      ) {
+        return;
+      }
+      this.addGlow(x, 1.1, z, 32 * sc, this.colOrange, 0.65);
+      const bi = this.cSpecBody++;
+      _pos.set(x, 15, z);
+      _euler.set(age * 4, age * 6, 0.35, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.set(6.2 * sc, 9.6 * sc, 6.2 * sc);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specBodyMesh.setMatrixAt(bi, _mat4);
+      this.specBodyMesh.setColorAt(bi, this.colVoid);
+
+      const ci = this.cSpecCore++;
+      _scale.set(7.6 * sc, 5.2 * sc, 7.6 * sc);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specCoreMesh.setMatrixAt(ci, _mat4);
+      this.specCoreMesh.setColorAt(ci, this.colOrange);
+
+      const ri = this.cSpecRing++;
+      _euler.set(Math.PI * 0.5, 0, -age * 9, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.setScalar(9.0 * sc);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specRingMesh.setMatrixAt(ri, _mat4);
+      this.specRingMesh.setColorAt(ri, this.colGold);
+      return;
+    }
+
+    if (kind === 'astral_helix') {
+      // Boss 2 Ficticio: Hélice Hiperdimensional de Jade (Cristal alado serafínico que ondula)
+      if (this.cSpecCore >= POOL_CAPS.SPECIAL || this.cSpecWing + 2 > POOL_CAPS.SPECIAL) return;
+      this.addGlow(x, 1.2, z, 34 * sc, this.colGraceJade, 0.72);
+      const ci = this.cSpecCore++;
+      _pos.set(x, 16, z);
+      _euler.set(0, age * 10, 0, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.set(4.5 * sc, 9.2 * sc, 4.5 * sc);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specCoreMesh.setMatrixAt(ci, _mat4);
+      this.specCoreMesh.setColorAt(ci, this.colGraceJade);
+
+      const w1 = this.cSpecWing++;
+      _euler.set(0.3, angle + age * 10, 0.25, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.setScalar(0.82 * sc);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specWingMesh.setMatrixAt(w1, _mat4);
+      this.specWingMesh.setColorAt(w1, this.colColdSilver);
+
+      const w2 = this.cSpecWing++;
+      _euler.set(0.3, angle + age * 10 + Math.PI, -0.25, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specWingMesh.setMatrixAt(w2, _mat4);
+      this.specWingMesh.setColorAt(w2, this.colCyan);
+      return;
+    }
+
+    if (kind === 'seraph_eye') {
+      // Boss 2 Ficticio: Ojo Profético Desprendido (Globo ocular astral con iris de jade y anillo solar)
+      if (
+        this.cProjSphere >= POOL_CAPS.ENEMY_PROJ ||
+        this.cSpecCore >= POOL_CAPS.SPECIAL ||
+        this.cSpecRing >= POOL_CAPS.SPECIAL
+      ) {
+        return;
+      }
+      this.addGlow(x, 1.2, z, 36 * sc, this.colColdSilver, 0.75);
+      const si = this.cProjSphere++;
+      _pos.set(x, 16, z);
+      _quat.identity();
+      _scale.setScalar(5.8 * sc);
+      _mat4.compose(_pos, _quat, _scale);
+      this.projSphereMesh.setMatrixAt(si, _mat4);
+      this.projSphereMesh.setColorAt(si, this.colIvory);
+
+      const iris = this.cSpecCore++;
+      _pos.set(x + cosA * 3.8 * sc, 16, z - sinA * 3.8 * sc);
+      _euler.set(0, angle, 0, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.set(3.2 * sc, 4.4 * sc, 3.2 * sc);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specCoreMesh.setMatrixAt(iris, _mat4);
+      this.specCoreMesh.setColorAt(iris, this.colGraceJade);
+
+      const ri = this.cSpecRing++;
+      _pos.set(x, 16, z);
+      _euler.set(age * 7, angle, 0.4, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.setScalar(9.5 * sc);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specRingMesh.setMatrixAt(ri, _mat4);
+      this.specRingMesh.setColorAt(ri, this.colGold);
+      return;
+    }
+
+    if (kind === 'void_hourglass') {
+      // Boss 3 Ficticio: Reloj de Arena del Vacío (Paradoja bicónica púrpura con anillo carmesí)
+      if (this.cSpecCone + 2 > POOL_CAPS.SPECIAL || this.cSpecRing >= POOL_CAPS.SPECIAL) return;
+      this.addGlow(x, 1.2, z, 36 * sc, this.colPurple, 0.78);
+      const spin = age * 11;
+      const topC = this.cSpecCone++;
+      _pos.set(x, 19, z);
+      _euler.set(Math.PI, spin, 0, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.set(4.5 * sc, 4.5 * sc, 4.5 * sc);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specConeMesh.setMatrixAt(topC, _mat4);
+      this.specConeMesh.setColorAt(topC, this.colPurple);
+
+      const botC = this.cSpecCone++;
+      _pos.set(x, 11, z);
+      _euler.set(0, -spin, 0, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specConeMesh.setMatrixAt(botC, _mat4);
+      this.specConeMesh.setColorAt(botC, this.colDarkPurple);
+
+      const ri = this.cSpecRing++;
+      _pos.set(x, 15, z);
+      _euler.set(Math.PI * 0.35, spin, 0, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.setScalar(8.6 * sc);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specRingMesh.setMatrixAt(ri, _mat4);
+      this.specRingMesh.setColorAt(ri, this.colVermilion);
+      return;
+    }
+
+    if (kind === 'abyss_sigil') {
+      // Boss 3 Ficticio: Sello Carmesí de Excomunión (Sigilo con alas y diamante que rebota)
+      if (
+        this.cSpecRing >= POOL_CAPS.SPECIAL ||
+        this.cSpecCore >= POOL_CAPS.SPECIAL ||
+        this.cSpecWing + 2 > POOL_CAPS.SPECIAL
+      ) {
+        return;
+      }
+      this.addGlow(x, 1.2, z, 38 * sc, this.colVermilion, 0.75);
+      const ri = this.cSpecRing++;
+      _pos.set(x, 15, z);
+      _euler.set(Math.PI * 0.5, 0, age * 12, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.setScalar(10.5 * sc);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specRingMesh.setMatrixAt(ri, _mat4);
+      this.specRingMesh.setColorAt(ri, this.colVermilion);
+
+      const ci = this.cSpecCore++;
+      _euler.set(0, age * 14, 0, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.set(6.2 * sc, 6.2 * sc, 6.2 * sc);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specCoreMesh.setMatrixAt(ci, _mat4);
+      this.specCoreMesh.setColorAt(ci, this.colPurple);
+
+      for (const side of [0, Math.PI]) {
+        const wi = this.cSpecWing++;
+        _euler.set(Math.PI * 0.5, age * 12 + side, 0, 'YXZ');
+        _quat.setFromEuler(_euler);
+        _scale.setScalar(0.75 * sc);
+        _mat4.compose(_pos, _quat, _scale);
+        this.specWingMesh.setMatrixAt(wi, _mat4);
+        this.specWingMesh.setColorAt(wi, this.colGold);
+      }
+      return;
+    }
+
+    if (kind === 'chronos_crown') {
+      // Boss 4 Ficticio: Corona Armilar de Chronos (Esfera imposible con 3 giroscopios en 3 ejes)
+      if (this.cSpecCore >= POOL_CAPS.SPECIAL || this.cSpecRing + 3 > POOL_CAPS.SPECIAL) return;
+      this.addGlow(x, 1.3, z, 44 * sc, this.colAmber, 0.84);
+      const ci = this.cSpecCore++;
+      _pos.set(x, 16, z);
+      _euler.set(age * 6, age * 9, 0, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.setScalar(6.0 * sc);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specCoreMesh.setMatrixAt(ci, _mat4);
+      this.specCoreMesh.setColorAt(ci, this.colAmber);
+
+      const r1 = this.cSpecRing++;
+      _euler.set(age * 8, age * 5, 0, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.setScalar(11.4 * sc);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specRingMesh.setMatrixAt(r1, _mat4);
+      this.specRingMesh.setColorAt(r1, this.colGold);
+
+      const r2 = this.cSpecRing++;
+      _euler.set(0.6, -age * 9, Math.PI * 0.5, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.setScalar(9.2 * sc);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specRingMesh.setMatrixAt(r2, _mat4);
+      this.specRingMesh.setColorAt(r2, this.colVermilion);
+
+      const r3 = this.cSpecRing++;
+      _euler.set(Math.PI * 0.5, 0, age * 11, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.setScalar(7.4 * sc);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specRingMesh.setMatrixAt(r3, _mat4);
+      this.specRingMesh.setColorAt(r3, this.colColdSilver);
+      return;
+    }
+
+    if (kind === 'eclipse_star') {
+      // Boss 4 Ficticio: Estrella de Eclipse Oscuro (Sol negro con 4 alas doradas giratorias y halo carmesí)
+      if (
+        this.cProjSphere >= POOL_CAPS.ENEMY_PROJ ||
+        this.cSpecRing >= POOL_CAPS.SPECIAL ||
+        this.cSpecWing + 4 > POOL_CAPS.SPECIAL
+      ) {
+        return;
+      }
+      this.addGlow(x, 1.3, z, 42 * sc, this.colVermilion, 0.82);
+      const si = this.cProjSphere++;
+      _pos.set(x, 16, z);
+      _quat.identity();
+      _scale.setScalar(5.0 * sc);
+      _mat4.compose(_pos, _quat, _scale);
+      this.projSphereMesh.setMatrixAt(si, _mat4);
+      this.projSphereMesh.setColorAt(si, this.colVoid);
+
+      const ri = this.cSpecRing++;
+      _euler.set(Math.PI * 0.5, 0, age * 10, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.setScalar(9.8 * sc);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specRingMesh.setMatrixAt(ri, _mat4);
+      this.specRingMesh.setColorAt(ri, this.colVermilion);
+
+      for (let w = 0; w < 4; w++) {
+        const wi = this.cSpecWing++;
+        const wa = age * 12 + (w / 4) * Math.PI * 2;
+        _pos.set(x + Math.cos(wa) * 5.2 * sc, 16, z + Math.sin(wa) * 5.2 * sc);
+        _euler.set(Math.PI * 0.5, wa, 0, 'YXZ');
+        _quat.setFromEuler(_euler);
+        _scale.setScalar(0.75 * sc);
+        _mat4.compose(_pos, _quat, _scale);
+        this.specWingMesh.setMatrixAt(wi, _mat4);
+        this.specWingMesh.setColorAt(wi, w % 2 === 0 ? this.colGold : this.colPurple);
+      }
+      return;
+    }
+
+    // Fallback clásico
     const i = this.cEnemyProj;
     if (i >= POOL_CAPS.ENEMY_PROJ) return;
     this.cEnemyProj = i + 1;
-
-    _pos.set(x, 14, -y);
+    _pos.set(x, 14, z);
     _euler.set(0, angle, 0, 'YXZ');
     _quat.setFromEuler(_euler);
-    _scale.setScalar(5.0);
+    _scale.setScalar(5.0 * sc);
     _mat4.compose(_pos, _quat, _scale);
     this.enemyProjMesh.setMatrixAt(i, _mat4);
   }
@@ -2013,6 +2451,8 @@ export class InstancedArenaPools {
     this.#commitMesh(this.specRingMesh, this.cSpecRing, true, null);
     this.#commitMesh(this.specConeMesh, this.cSpecCone, true, null);
     this.#commitMesh(this.specWingMesh, this.cSpecWing, true, null);
+    this.#commitMesh(this.projStoneMesh, this.cProjStone, true, null);
+    this.#commitMesh(this.projSphereMesh, this.cProjSphere, true, null);
 
     this.#commitMesh(this.desoEyeMesh, this.cDeso, false, this.desoFlashAttr);
     this.#commitMesh(this.desoIrisMesh, this.cDeso, false, null);
