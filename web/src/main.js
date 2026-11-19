@@ -1,7 +1,8 @@
-// Punto de entrada principal: enrutador de pantallas (Inicio -> Arena 3D -> Resultados -> Jugadores/Perfil -> Dashboard en Vivo)
+// Punto de entrada principal: enrutador de pestañas (Jugar -> Arena 3D -> Partidas -> Ránking -> Sala en Vivo)
 
 import './styles/main.css';
-import { PLAYER_AVATAR_MAP, GAME_MODE_MAP } from './engine/constants.js';
+import './styles/simplify.css';
+import { PLAYER_AVATAR_MAP } from './engine/constants.js';
 import { TelemetryStore, normalizeInitials } from './engine/telemetryStore.js';
 import { LiveClassroomSync } from './engine/liveSync.js';
 import { WebAudioHaptics } from './engine/audioHaptics.js';
@@ -99,12 +100,22 @@ function navigate(nextScreen) {
     activeCleanup();
     activeCleanup = null;
   }
+  if (nextScreen === 'players' && appState.screen !== 'players') {
+    // Si no viene con un perfil concreto ya fijado, mostrar el listado
+  }
   appState.screen = nextScreen;
   syncUrlWithScreen(nextScreen);
   renderApp();
   if (nextScreen !== 'game') {
     window.scrollTo({ top: 0, behavior: 'instant' });
   }
+}
+
+function handleTabNavigate(targetTab) {
+  if (targetTab === 'players') {
+    appState.playersInitialTarget = null;
+  }
+  navigate(targetTab);
 }
 
 function startRunWithLivePresence() {
@@ -150,6 +161,7 @@ function renderApp() {
       store,
       liveSync,
       audio,
+      onNavigate: handleTabNavigate,
       onReturnToStart: () => {
         navigate('start');
       },
@@ -167,6 +179,7 @@ function renderApp() {
       store,
       liveSync,
       roomCode: liveSync.roomCode,
+      onNavigate: handleTabNavigate,
       onPlayAgain: () => {
         audio.unlock();
         startRunWithLivePresence();
@@ -190,6 +203,7 @@ function renderApp() {
       store,
       liveSync,
       initialPlayerInitials: appState.playersInitialTarget,
+      onNavigate: handleTabNavigate,
       onReturnToStart: () => {
         appState.playersInitialTarget = null;
         navigate('start');
@@ -207,7 +221,7 @@ function renderApp() {
     return;
   }
 
-  // Pantalla de inicio
+  // Pestaña Jugar (Inicio)
   mountStartView(
     rootEl,
     {
@@ -219,6 +233,7 @@ function renderApp() {
       roomCode: liveSync.roomCode
     },
     {
+      onNavigate: handleTabNavigate,
       onUpdatePlayerName: (nextName, opts = {}) => {
         appState.playerName = String(nextName || '').slice(0, 18);
         savePrefs(appState);
@@ -255,10 +270,8 @@ function renderApp() {
 // Actualizar contadores si llegan partidas en tiempo real mientras estamos en la pantalla de inicio
 liveSync.subscribe(() => {
   if (appState.screen === 'start') {
-    const tBtn = rootEl.querySelector('#btn-open-telemetry span');
-    const pBtn = rootEl.querySelector('#btn-open-players span');
-    if (tBtn) tBtn.textContent = `▮ Telemetría (${store.records.length})`;
-    if (pBtn) pBtn.textContent = `★ Jugadores (${store.uniquePlayerCount})`;
+    const count = rootEl.querySelector('#btn-open-stats .stats-count');
+    if (count) count.textContent = `(${store.records.length})`;
   }
 });
 

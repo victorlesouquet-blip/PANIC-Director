@@ -639,7 +639,8 @@ export const POOL_CAPS = {
   PARTICLES: 320,
   GHOSTS: 64,
   RINGS: 112,
-  GLOWS: 256
+  GLOWS: 256,
+  SPECIAL: 128
 };
 
 export class InstancedArenaPools {
@@ -657,6 +658,9 @@ export class InstancedArenaPools {
     this.colIvory = new THREE.Color(RELICARIO_PALETTE.ivory);
     this.colGraceJade = new THREE.Color(RELICARIO_PALETTE.graceJade);
     this.colOrange = new THREE.Color(RELICARIO_PALETTE.emberOrange);
+    this.colPurple = new THREE.Color('#A855F7');
+    this.colDarkPurple = new THREE.Color('#3B0764');
+    this.colOldBone = new THREE.Color(RELICARIO_PALETTE.oldBone);
 
     // 1. Halos luminosos en suelo (InstancedMesh único)
     const glowOpArr = new Float32Array(POOL_CAPS.GLOWS);
@@ -810,6 +814,18 @@ export class InstancedArenaPools {
     assets.trackMaterial(ghostMat);
     this.ghostsMesh = this.#makeInstanced(ghostBundle.geo, ghostMat, POOL_CAPS.GHOSTS, true);
 
+    // 10. Nuevos Arquetipos Especiales (Incensario, Tejedor, Gólem Divisor, Sombra) — 3 draw calls instanciados con color
+    const specMat = new THREE.MeshPhongMaterial({
+      color: '#FFFFFF',
+      emissive: '#221518',
+      emissiveIntensity: 0.45,
+      shininess: 48
+    });
+    assets.trackMaterial(specMat);
+    this.specCoreMesh = this.#makeInstanced(assets.octaUnit, specMat, POOL_CAPS.SPECIAL, true);
+    this.specBodyMesh = this.#makeInstanced(assets.boxUnit, specMat, POOL_CAPS.SPECIAL, true);
+    this.specRingMesh = this.#makeInstanced(assets.torusUnit, specMat, POOL_CAPS.SPECIAL, true);
+
     this.resetFrameCounts();
   }
 
@@ -850,6 +866,9 @@ export class InstancedArenaPools {
     this.cEnemyProj = 0;
     this.cParticle = 0;
     this.cGhost = 0;
+    this.cSpecCore = 0;
+    this.cSpecBody = 0;
+    this.cSpecRing = 0;
   }
 
   addGlow(x, yHeight, z, size, color, opacity) {
@@ -886,6 +905,7 @@ export class InstancedArenaPools {
 
     const x = enemy.pos.x;
     const z = -enemy.pos.y;
+    const sc = enemy.renderScale || 1.0;
     const hoverY = Math.sin(enemy.age * 9.0) * 2.0;
     const rotY = enemy.facingAngle + Math.PI * 0.5;
     const sinR = Math.sin(rotY);
@@ -895,47 +915,47 @@ export class InstancedArenaPools {
 
     // Halo en suelo
     if (enemy.isPouncing) {
-      this.addGlow(x, 0.9, z, 46, this.colGold, 0.85);
+      this.addGlow(x, 0.9, z, 46 * sc, this.colGold, 0.85);
     } else {
-      this.addGlow(x, 0.9, z, 36, this.colVermilion, 0.42);
+      this.addGlow(x, 0.9, z, 36 * sc, sc < 0.85 ? this.colGraceJade : this.colVermilion, 0.42);
     }
 
     // Cuerpo Ojo
     _euler.set(0, rotY, 0, 'YXZ');
     _quat.setFromEuler(_euler);
-    _pos.set(x, 12 + hoverY, z);
-    _scale.set(8.2, 7.6, 8.2);
+    _pos.set(x, 12 * sc + hoverY, z);
+    _scale.set(8.2 * sc, 7.6 * sc, 8.2 * sc);
     _mat4.compose(_pos, _quat, _scale);
     this.desoEyeMesh.setMatrixAt(i, _mat4);
 
     // Iris (+6.8 en Z local)
-    _pos.set(x + 6.8 * sinR, 12 + hoverY, z + 6.8 * cosR);
-    _scale.set(4.5, 4.5, 2.2);
+    _pos.set(x + 6.8 * sc * sinR, 12 * sc + hoverY, z + 6.8 * sc * cosR);
+    _scale.set(4.5 * sc, 4.5 * sc, 2.2 * sc);
     _mat4.compose(_pos, _quat, _scale);
     this.desoIrisMesh.setMatrixAt(i, _mat4);
 
     // Pupila (+8.2 en Z local)
     const twitch = Math.sin(enemy.age * 16.0) > 0.86 ? 1.45 : 1.0;
-    _pos.set(x + 8.2 * sinR, 12 + hoverY, z + 8.2 * cosR);
-    _scale.set(1.5 * twitch, 4.2, 1.5);
+    _pos.set(x + 8.2 * sc * sinR, 12 * sc + hoverY, z + 8.2 * sc * cosR);
+    _scale.set(1.5 * twitch * sc, 4.2 * sc, 1.5 * sc);
     _mat4.compose(_pos, _quat, _scale);
     this.desoPupilMesh.setMatrixAt(i, _mat4);
 
     // Ala izquierda (-7.5 X, -1 Z local)
     const flapL = Math.sin(enemy.age * 22.0) * 0.42 + 0.15;
-    _pos.set(x + (-7.5) * cosR + (-1) * sinR, 13 + hoverY, z - (-7.5) * sinR + (-1) * cosR);
+    _pos.set(x + (-7.5 * sc) * cosR + (-1 * sc) * sinR, 13 * sc + hoverY, z - (-7.5 * sc) * sinR + (-1 * sc) * cosR);
     _euler.set(0, rotY, flapL, 'YXZ');
     _quat.setFromEuler(_euler);
-    _scale.set(0.95, 0.95, 0.95);
+    _scale.set(0.95 * sc, 0.95 * sc, 0.95 * sc);
     _mat4.compose(_pos, _quat, _scale);
     this.desoLeftWingMesh.setMatrixAt(i, _mat4);
 
     // Ala derecha (+7.5 X, -1 Z local, rotada Y + PI con escala positiva -> sin normales invertidas)
     const flapR = -Math.sin(enemy.age * 18.5 + 0.7) * 0.46 - 0.15;
-    _pos.set(x + 7.5 * cosR + (-1) * sinR, 13 + hoverY, z - 7.5 * sinR + (-1) * cosR);
+    _pos.set(x + 7.5 * sc * cosR + (-1 * sc) * sinR, 13 * sc + hoverY, z - 7.5 * sc * sinR + (-1 * sc) * cosR);
     _euler.set(0, rotY + Math.PI, -flapR, 'YXZ');
     _quat.setFromEuler(_euler);
-    _scale.set(0.95, 0.95, 0.95);
+    _scale.set(0.95 * sc, 0.95 * sc, 0.95 * sc);
     _mat4.compose(_pos, _quat, _scale);
     this.desoRightWingMesh.setMatrixAt(i, _mat4);
   }
@@ -1226,9 +1246,158 @@ export class InstancedArenaPools {
     this.ghostOpacityArr[i] = opacity;
   }
 
+  // Nuevo Enemigo 4: Incensario Volátil (Bomba de Brasa que explota al morir o al acercarse)
+  addIncensario(enemy) {
+    if (this.cSpecCore >= POOL_CAPS.SPECIAL || this.cSpecRing >= POOL_CAPS.SPECIAL) return;
+    const x = enemy.pos.x;
+    const z = -enemy.pos.y;
+    const flash = enemy.flashTimer > 0;
+    const pulse = enemy.isIgniting ? 1.25 + Math.sin(enemy.age * 28) * 0.25 : 1.0 + Math.sin(enemy.age * 10) * 0.1;
+
+    this.addGlow(x, 1.0, z, enemy.isIgniting ? 72 : 44, this.colOrange, enemy.isIgniting ? 0.85 : 0.48);
+    if (enemy.isIgniting) {
+      this.addRing(x, 1.5, z, 42, enemy.age * 8, this.colOrange, 0.92);
+    }
+
+    const ci = this.cSpecCore++;
+    _pos.set(x, 15 + Math.sin(enemy.age * 8) * 2.5, z);
+    _euler.set(enemy.age * 3.5, enemy.age * 5.0, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.set(9.5 * pulse, 12.5 * pulse, 9.5 * pulse);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specCoreMesh.setMatrixAt(ci, _mat4);
+    this.specCoreMesh.setColorAt(ci, flash ? this.colWhite : this.colOrange);
+
+    const ri = this.cSpecRing++;
+    _euler.set(Math.PI * 0.35, enemy.age * 6.0, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.setScalar(13.5 * pulse);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specRingMesh.setMatrixAt(ri, _mat4);
+    this.specRingMesh.setColorAt(ri, flash ? this.colWhite : this.colGold);
+  }
+
+  // Nuevo Enemigo 5: Tejedor Astral (Francotirador de Cristal que mantiene distancia)
+  addTejedor(enemy) {
+    if (this.cSpecCore >= POOL_CAPS.SPECIAL || this.cSpecRing + 2 > POOL_CAPS.SPECIAL) return;
+    const x = enemy.pos.x;
+    const z = -enemy.pos.y;
+    const flash = enemy.flashTimer > 0;
+    const bob = Math.sin(enemy.age * 5.5) * 2.5;
+
+    this.addGlow(x, 1.0, z, 46, this.colColdSilver, 0.45);
+
+    const ci = this.cSpecCore++;
+    _pos.set(x, 18 + bob, z);
+    _euler.set(0, enemy.age * 3.0, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.set(8.5, 16.5, 8.5);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specCoreMesh.setMatrixAt(ci, _mat4);
+    this.specCoreMesh.setColorAt(ci, flash ? this.colWhite : this.colColdSilver);
+
+    const r1 = this.cSpecRing++;
+    _euler.set(Math.PI * 0.5, enemy.age * 2.5, 0.4, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.setScalar(14.0);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specRingMesh.setMatrixAt(r1, _mat4);
+    this.specRingMesh.setColorAt(r1, flash ? this.colWhite : this.colGraceJade);
+
+    const r2 = this.cSpecRing++;
+    _euler.set(0.4, -enemy.age * 3.2, Math.PI * 0.3, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.setScalar(11.5);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specRingMesh.setMatrixAt(r2, _mat4);
+    this.specRingMesh.setColorAt(r2, flash ? this.colWhite : this.colIvory);
+  }
+
+  // Nuevo Enemigo 6: Coloso Menor / Gólem Divisor (Al morir se divide en 2 mini-espectros rápidos)
+  addColosoMenor(enemy) {
+    if (this.cSpecBody + 3 > POOL_CAPS.SPECIAL || this.cSpecCore >= POOL_CAPS.SPECIAL) return;
+    const x = enemy.pos.x;
+    const z = -enemy.pos.y;
+    const rotY = enemy.facingAngle + Math.PI * 0.5;
+    const sinR = Math.sin(rotY);
+    const cosR = Math.cos(rotY);
+    const flash = enemy.flashTimer > 0;
+
+    this.addGlow(x, 1.0, z, 54, this.colGraceJade, 0.44);
+
+    // Torso monolítico de hueso
+    const bi = this.cSpecBody++;
+    _pos.set(x, 14, z);
+    _euler.set(0, rotY, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.set(16, 20, 12);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specBodyMesh.setMatrixAt(bi, _mat4);
+    this.specBodyMesh.setColorAt(bi, flash ? this.colWhite : this.colOldBone);
+
+    // Hombreras dobles
+    for (const side of [-1, 1]) {
+      const si = this.cSpecBody++;
+      _pos.set(x + side * 10 * cosR, 19, z - side * 10 * sinR);
+      _scale.set(7, 10, 9);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specBodyMesh.setMatrixAt(si, _mat4);
+      this.specBodyMesh.setColorAt(si, flash ? this.colWhite : this.colIvory);
+    }
+
+    // Núcleo de jade gemelo
+    const ci = this.cSpecCore++;
+    _pos.set(x, 27, z);
+    _scale.set(7.5, 9.5, 7.5);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specCoreMesh.setMatrixAt(ci, _mat4);
+    this.specCoreMesh.setColorAt(ci, flash ? this.colWhite : this.colGraceJade);
+  }
+
+  // Nuevo Enemigo 7: Sombra Abisal (Se teletransporta y lanza dagas de sombra)
+  addSombra(enemy) {
+    if (this.cSpecBody >= POOL_CAPS.SPECIAL || this.cSpecCore >= POOL_CAPS.SPECIAL || this.cSpecRing >= POOL_CAPS.SPECIAL) return;
+    const x = enemy.pos.x;
+    const z = -enemy.pos.y;
+    const rotY = enemy.facingAngle + Math.PI * 0.5;
+    const flash = enemy.flashTimer > 0;
+
+    this.addGlow(x, 1.0, z, 44, this.colPurple, 0.52);
+
+    const bi = this.cSpecBody++;
+    _pos.set(x, 13, z);
+    _euler.set(0.2, rotY, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.set(9.5, 18, 8.5);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specBodyMesh.setMatrixAt(bi, _mat4);
+    this.specBodyMesh.setColorAt(bi, flash ? this.colWhite : this.colDarkPurple);
+
+    const ci = this.cSpecCore++;
+    _pos.set(x, 25, z);
+    _euler.set(0, rotY + enemy.age * 3, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.set(6.5, 8.5, 6.5);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specCoreMesh.setMatrixAt(ci, _mat4);
+    this.specCoreMesh.setColorAt(ci, flash ? this.colWhite : this.colPurple);
+
+    const ri = this.cSpecRing++;
+    _pos.set(x, 26, z);
+    _euler.set(Math.PI * 0.5, 0, enemy.age * 4, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.setScalar(11.0);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specRingMesh.setMatrixAt(ri, _mat4);
+    this.specRingMesh.setColorAt(ri, flash ? this.colWhite : this.colVermilion);
+  }
+
   commit() {
     this.#commitMesh(this.glowsMesh, this.cGlow, true, this.glowOpacityAttr);
     this.#commitMesh(this.ringsMesh, this.cRing, true, this.ringOpacityAttr);
+    this.#commitMesh(this.specCoreMesh, this.cSpecCore, true, null);
+    this.#commitMesh(this.specBodyMesh, this.cSpecBody, true, null);
+    this.#commitMesh(this.specRingMesh, this.cSpecRing, true, null);
 
     this.#commitMesh(this.desoEyeMesh, this.cDeso, false, this.desoFlashAttr);
     this.#commitMesh(this.desoIrisMesh, this.cDeso, false, null);

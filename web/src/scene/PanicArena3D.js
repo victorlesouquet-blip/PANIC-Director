@@ -5,11 +5,15 @@ import * as THREE from 'three';
 import {
   CAMPAIGN_PHASES,
   GAME_MODE_MAP,
+  LEVEL_UPGRADES,
+  LEVEL_UPGRADE_MAP,
   PHASE_TRANSITION_DURATION,
   PLAYER_AVATAR_MAP,
   RELICARIO_PALETTE,
   stressTierFromIndex,
-  TOTAL_RUN_DURATION
+  TOTAL_RUN_DURATION,
+  UPGRADE_RARITIES,
+  UPGRADE_RARITY_MAP
 } from '../engine/constants.js';
 import { createWaveDirector, StressMetricsTracker } from '../engine/aiDirector.js';
 import {
@@ -39,7 +43,7 @@ const POPUP_POOL_SIZE = 8;
 
 function xpRequiredForLevel(level) {
   const step = Math.max(0, level - 1);
-  return 35 + level * 20 + step * step * 8;
+  return 25 + level * 15 + step * step * 4;
 }
 
 function randomRange(min, max) {
@@ -69,7 +73,8 @@ export class PanicArena3D {
     onSnapshotUpdate,
     onRunCompleted,
     onJoystickChange,
-    onPauseShortcut
+    onPauseShortcut,
+    onUpgradeDraftChange
   }) {
     this.container = container;
     this.modeId = 'unified';
@@ -83,6 +88,7 @@ export class PanicArena3D {
     this.onRunCompleted = onRunCompleted;
     this.onJoystickChange = onJoystickChange;
     this.onPauseShortcut = onPauseShortcut;
+    this.onUpgradeDraftChange = onUpgradeDraftChange;
 
     this.hasEnded = false;
     this.isUserPaused = false;
@@ -100,21 +106,75 @@ export class PanicArena3D {
       director2026: createEmptyPhaseStat(false)
     };
 
-    // Estado del jugador y progresión
+    // Estado del jugador, mejoras (upgrades) y progresión
     this.playerPos = { x: 0, y: 0 };
     this.playerVelocity = { dx: 0, dy: 0 };
-    this.playerHP = PLAYER_MAX_HP;
+    const sb = this.avatarDef.startingBonuses || {};
+    this.playerMaxHP = PLAYER_MAX_HP + (sb.maxHpBonus || 0);
+    this.playerHP = this.playerMaxHP;
     this.invulnerabilityTimer = 0;
     this.fireTimer = 0;
     this.playerLevel = 1;
     this.currentXP = 0;
     this.xpToNextLevel = xpRequiredForLevel(1);
+    this.upgradeRanks = {
+      damage: 0,
+      fireRate: 0,
+      multishot: 0,
+      pierce: 0,
+      moveSpeed: 0,
+      vitality: 0,
+      magnet: 0,
+      nova: 0
+    };
+    this.upgradeBestRarity = {
+      damage: null,
+      fireRate: null,
+      multishot: null,
+      pierce: null,
+      moveSpeed: null,
+      vitality: null,
+      magnet: null,
+      nova: null
+    };
+    this.upgradeStats = {
+      dmgBonus: sb.dmgBonus || 0,
+      knockBonus: sb.knockBonus || 0,
+      rateBonus: sb.rateBonus || 0,
+      projSpeedBonus: sb.projSpeedBonus || 0,
+      extraShots: sb.extraShots || 0,
+      pierceBonus: sb.pierceBonus || 0,
+      scaleBonus: sb.scaleBonus || 0,
+      speedBonus: sb.speedBonus || 0,
+      iframeBonus: sb.iframeBonus || 0,
+      radiusBonus: sb.radiusBonus || 0,
+      medkitHealBonus: sb.medkitHealBonus || 0,
+      novaDmg: sb.novaDmg || 0,
+      novaRadius: sb.novaRadius || 0,
+      xpMultiplier: sb.xpMultiplier || 1.0,
+      lifeStealEveryKills: sb.lifeStealEveryKills || 0,
+      lifeStealAmount: sb.lifeStealAmount || 0
+    };
+    this.pendingLevelUps = 0;
+    this.activeUpgradeDraft = null;
+    this.activeBoss = null;
+    this.bossSchedule = [30.0, 60.0, 90.0, 119.0];
+    this.bossesSpawned = 0;
+    this.bossZones = [];
 
     // Motores de IA (Campaña unificada de 3 fases: 1985 -> Híbrido -> IA Directora 2026)
     this.stressTracker = new StressMetricsTracker();
     this.waveDirector = createWaveDirector('unified');
     this.previousStressTier = this.stressTracker.currentTier;
     this.lastDirective = null;
+    this.aiRescueMedkitTimer = 0;
+    this.currentAiState = {
+      mode: 'balanced',
+      badge: '⚖️ NORMAL',
+      text: 'Ritmo equilibrado',
+      color: RELICARIO_PALETTE.liturgicalGold,
+      spawnMult: 1.0
+    };
 
     // Entidades y VFX en pools ligeros (sin allocations Three.js por frame)
     this.enemies = [];
@@ -207,6 +267,7 @@ export class PanicArena3D {
     this.#buildSanctuaryArena();
     this.#buildAmbientEmbers();
     this.#buildPlayer();
+    this.#buildBossVisual();
     this.pools = new InstancedArenaPools(this.worldGroup, this.assets);
     this.#buildPopupPool();
 
@@ -460,6 +521,432 @@ export class PanicArena3D {
     this.playerXPBar.updateXP(0, 1, false);
   }
 
+  #buildBossVisual() {
+    const root = new THREE.Group();
+    root.visible = false;
+
+    const body = new THREE.Group();
+    root.add(body);
+
+    // Doble sello ritual gigante en el suelo bajo el Boss (cambia de color según el Boss)
+    const auraMat = new THREE.MeshBasicMaterial({
+      color: RELICARIO_PALETTE.vermilion,
+      transparent: true,
+      opacity: 0.82,
+      depthWrite: false,
+      fog: false
+    });
+    this.assets.trackMaterial(auraMat);
+    const auraRing = new THREE.Mesh(this.assets.ringGround, auraMat);
+    auraRing.scale.setScalar(46);
+    auraRing.position.y = 0.75;
+    root.add(auraRing);
+
+    const innerAuraRing = new THREE.Mesh(this.assets.ringGround, auraMat);
+    innerAuraRing.scale.setScalar(28);
+    innerAuraRing.position.y = 0.82;
+    root.add(innerAuraRing);
+
+    // =========================================================================
+    // BOSS 1 (30s): COLOSO DE CENIZA (Titán de Forja, Costillas, 4 Cuernos y 2 Martillos de Guerra)
+    // =========================================================================
+    const model1 = new THREE.Group();
+    const mat1Core = new THREE.MeshPhongMaterial({
+      color: '#2C160E',
+      emissive: '#B8330A',
+      emissiveIntensity: 0.78,
+      shininess: 45
+    });
+    this.assets.trackMaterial(mat1Core);
+
+    // Torso acorazado + costillar de hueso exterior
+    const b1Torso = new THREE.Mesh(this.assets.icosaUnit, mat1Core);
+    b1Torso.scale.set(22, 26, 18);
+    b1Torso.position.y = 22;
+    model1.add(b1Torso);
+
+    for (let r = 0; r < 3; r++) {
+      const ribBar = new THREE.Mesh(this.assets.torusUnit, this.assets.matOldBone);
+      ribBar.scale.set(19 - r * 1.5, 14 - r, 10);
+      ribBar.position.set(0, 14 + r * 6, 3);
+      ribBar.rotation.x = Math.PI * 0.5;
+      model1.add(ribBar);
+    }
+
+    // Corazón de magma incandescente
+    const b1Furnace = new THREE.Mesh(this.assets.octaUnit, this.assets.matOrange);
+    b1Furnace.scale.set(11, 14, 11);
+    b1Furnace.position.set(0, 21, 9);
+    model1.add(b1Furnace);
+
+    // Cráneo demoníaco esculpido + mandíbula
+    const b1Skull = new THREE.Mesh(this.assets.icosaUnit, this.assets.matIvory);
+    b1Skull.scale.set(12, 13, 12);
+    b1Skull.position.set(0, 41, 3);
+    model1.add(b1Skull);
+
+    const b1Jaw = new THREE.Mesh(this.assets.boxUnit, this.assets.matOldBone);
+    b1Jaw.scale.set(11, 5, 10);
+    b1Jaw.position.set(0, 32, 5);
+    model1.add(b1Jaw);
+
+    // Brazos articulados con 2 Martillos de Guerra de Lava
+    const b1ArmsGroup = new THREE.Group();
+    b1ArmsGroup.position.set(0, 30, 0);
+    for (const side of [-1, 1]) {
+      // Hombreras dobles con espinas
+      const pauldron = new THREE.Mesh(this.assets.octaUnit, this.assets.matOldBone);
+      pauldron.scale.set(13, 14, 13);
+      pauldron.position.set(side * 22, 2, 0);
+      pauldron.rotation.z = -side * 0.4;
+      b1ArmsGroup.add(pauldron);
+
+      const spike = new THREE.Mesh(this.assets.coneUnit, this.assets.matOrange);
+      spike.scale.set(4.5, 11, 4.5);
+      spike.position.set(side * 26, 12, 0);
+      spike.rotation.z = -side * 0.55;
+      b1ArmsGroup.add(spike);
+
+      // Martillo de guerra gigante en cada mano
+      const shaft = new THREE.Mesh(this.assets.cylUnit, this.assets.matVoid);
+      shaft.scale.set(2.2, 26, 2.2);
+      shaft.position.set(side * 25, -8, 10);
+      shaft.rotation.x = 0.55;
+      b1ArmsGroup.add(shaft);
+
+      const hammerHead = new THREE.Mesh(this.assets.boxUnit, this.assets.matOrange);
+      hammerHead.scale.set(11, 11, 16);
+      hammerHead.position.set(side * 25, -16, 18);
+      b1ArmsGroup.add(hammerHead);
+
+      // 4 Cuernos curvados (2 superiores + 2 laterales)
+      const hornTop = new THREE.Mesh(this.assets.coneUnit, this.assets.matOrange);
+      hornTop.scale.set(4.5, 15, 4.5);
+      hornTop.position.set(side * 12, 49, 2);
+      hornTop.rotation.z = -side * 0.72;
+      hornTop.rotation.x = 0.35;
+      model1.add(hornTop);
+
+      const hornSide = new THREE.Mesh(this.assets.coneUnit, this.assets.matOldBone);
+      hornSide.scale.set(3.5, 11, 3.5);
+      hornSide.position.set(side * 15, 40, 4);
+      hornSide.rotation.z = -side * 1.15;
+      model1.add(hornSide);
+
+      // Ojos de brasa
+      const eye = new THREE.Mesh(this.assets.octaUnit, this.assets.matGold);
+      eye.scale.set(3.2, 2.5, 3.2);
+      eye.position.set(side * 5, 41, 13);
+      model1.add(eye);
+    }
+    model1.add(b1ArmsGroup);
+
+    // Anillo orbital de 8 cristales de magma
+    const b1Hammers = new THREE.Group();
+    b1Hammers.position.y = 14;
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      const crystal = new THREE.Mesh(this.assets.octaUnit, i % 2 === 0 ? this.assets.matOrange : this.assets.matGold);
+      crystal.scale.set(5.5, 10, 5.5);
+      crystal.position.set(Math.cos(a) * 30, 0, Math.sin(a) * 30);
+      b1Hammers.add(crystal);
+    }
+    model1.add(b1Hammers);
+    body.add(model1);
+
+    // =========================================================================
+    // BOSS 2 (60s): SERAFÍN CORRUPTO (Arcángel de Cristal, 6 Alas Tricolor y Orbes Astrales)
+    // =========================================================================
+    const model2 = new THREE.Group();
+    const mat2Core = new THREE.MeshPhongMaterial({
+      color: '#0D292C',
+      emissive: '#198A85',
+      emissiveIntensity: 0.78,
+      shininess: 75
+    });
+    this.assets.trackMaterial(mat2Core);
+
+    const b2Spire = new THREE.Mesh(this.assets.coneUnit, mat2Core);
+    b2Spire.scale.set(13, 25, 13);
+    b2Spire.position.y = 24;
+    b2Spire.rotation.x = Math.PI;
+    model2.add(b2Spire);
+
+    const b2Armor = new THREE.Mesh(this.assets.octaUnit, this.assets.matIvory);
+    b2Armor.scale.set(11, 16, 9);
+    b2Armor.position.y = 29;
+    model2.add(b2Armor);
+
+    const b2Crown = new THREE.Mesh(this.assets.octaUnit, this.assets.matColdSilver);
+    b2Crown.scale.set(10, 18, 10);
+    b2Crown.position.y = 46;
+    model2.add(b2Crown);
+
+    // Halo solar radiante detrás de la cabeza
+    const b2SunHalo = new THREE.Mesh(this.assets.torusUnit, this.assets.matGold);
+    b2SunHalo.scale.setScalar(16);
+    b2SunHalo.position.set(0, 44, -4);
+    model2.add(b2SunHalo);
+
+    // 3 Ojos verticales de jade consagrado
+    for (let e = 0; e < 3; e++) {
+      const eye = new THREE.Mesh(this.assets.octaUnit, this.assets.matGraceJade);
+      eye.scale.set(3.4, 4.8, 3.4);
+      eye.position.set(0, 22 + e * 9, 12);
+      model2.add(eye);
+    }
+
+    // 6 Grandes Alas Articuladas en 3 pisos (Oro arriba, Plata en medio, Jade abajo)
+    const b2LeftWings = new THREE.Group();
+    const b2RightWings = new THREE.Group();
+    b2LeftWings.position.set(-10, 30, -3);
+    b2RightWings.position.set(10, 30, -3);
+    const wingMats = [this.assets.matGold, this.assets.matColdSilver, this.assets.matGraceJade];
+    for (let w = 0; w < 3; w++) {
+      const s = 2.25 - w * 0.28;
+      const lw = new THREE.Mesh(this.assets.desolladoWingGeo, wingMats[w]);
+      lw.scale.setScalar(s);
+      lw.position.set(-5 - w * 3.5, (1 - w) * 9.5, -w * 2);
+      lw.rotation.z = (1 - w) * 0.36;
+      b2LeftWings.add(lw);
+
+      const rw = new THREE.Mesh(this.assets.desolladoWingGeo, wingMats[w]);
+      rw.scale.setScalar(s);
+      rw.position.set(5 + w * 3.5, (1 - w) * 9.5, -w * 2);
+      rw.rotation.y = Math.PI;
+      rw.rotation.z = (1 - w) * 0.36;
+      b2RightWings.add(rw);
+    }
+    model2.add(b2LeftWings, b2RightWings);
+
+    // Astrolabio cruzado + 4 Orbes de cristal flotantes
+    const b2Ring1 = new THREE.Mesh(this.assets.torusUnit, this.assets.matColdSilver);
+    b2Ring1.scale.setScalar(29);
+    b2Ring1.position.y = 28;
+    const b2Ring2 = new THREE.Mesh(this.assets.torusUnit, this.assets.matGraceJade);
+    b2Ring2.scale.setScalar(23);
+    b2Ring2.position.y = 28;
+    for (let o = 0; o < 4; o++) {
+      const a = (o / 4) * Math.PI * 2;
+      const orb = new THREE.Mesh(this.assets.octaUnit, o % 2 === 0 ? this.assets.matColdSilver : this.assets.matGold);
+      orb.scale.setScalar(0.18);
+      orb.position.set(Math.cos(a) * 1.15, Math.sin(a) * 1.15, 0);
+      b2Ring1.add(orb);
+    }
+    model2.add(b2Ring1, b2Ring2);
+    body.add(model2);
+
+    // =========================================================================
+    // BOSS 3 (90s): INQUISIDOR ABISAL (Señor de las Guadañas y Trono de 6 Espadas)
+    // =========================================================================
+    const model3 = new THREE.Group();
+    const mat3Core = new THREE.MeshPhongMaterial({
+      color: '#1C0826',
+      emissive: '#7E18BF',
+      emissiveIntensity: 0.8,
+      shininess: 55
+    });
+    this.assets.trackMaterial(mat3Core);
+
+    const b3Cloak = new THREE.Mesh(this.assets.coneUnit, mat3Core);
+    b3Cloak.scale.set(21, 24, 21);
+    b3Cloak.position.y = 21;
+    model3.add(b3Cloak);
+
+    const b3Shoulders = new THREE.Mesh(this.assets.octaUnit, this.assets.matVoid);
+    b3Shoulders.scale.set(22, 8, 14);
+    b3Shoulders.position.y = 30;
+    model3.add(b3Shoulders);
+
+    // Sombrero de ala ancha de Inquisidor + corona de espinas doradas
+    const b3Brim = new THREE.Mesh(this.assets.cylUnit, this.assets.matVoid);
+    b3Brim.scale.set(27, 2.2, 27);
+    b3Brim.position.y = 38;
+    model3.add(b3Brim);
+
+    const b3CrownRing = new THREE.Mesh(this.assets.torusUnit, this.assets.matGold);
+    b3CrownRing.scale.setScalar(14);
+    b3CrownRing.position.y = 40;
+    b3CrownRing.rotation.x = Math.PI * 0.5;
+    model3.add(b3CrownRing);
+
+    const b3Hat = new THREE.Mesh(this.assets.coneUnit, mat3Core);
+    b3Hat.scale.set(12.5, 16, 12.5);
+    b3Hat.position.y = 50;
+    model3.add(b3Hat);
+
+    const b3Visor = new THREE.Mesh(this.assets.boxUnit, this.assets.matVermilion);
+    b3Visor.scale.set(14, 3.5, 5);
+    b3Visor.position.set(0, 34, 11.5);
+    model3.add(b3Visor);
+
+    // Abanico de 6 Espadas Espectrales flotando tras su espalda
+    const b3SwordsFan = new THREE.Group();
+    b3SwordsFan.position.set(0, 36, -10);
+    for (let s = 0; s < 6; s++) {
+      const ang = -0.85 + (s / 5) * 1.7;
+      const sword = new THREE.Mesh(this.assets.octaUnit, s % 2 === 0 ? this.assets.matVermilion : this.assets.matGold);
+      sword.scale.set(2.8, 18, 1.5);
+      sword.position.set(Math.sin(ang) * 24, Math.cos(ang) * 14, 0);
+      sword.rotation.z = -ang;
+      b3SwordsFan.add(sword);
+    }
+    model3.add(b3SwordsFan);
+
+    // 4 Guadañas gigantes giratorias + 4 obeliscos flotantes
+    const b3Scythes = new THREE.Group();
+    b3Scythes.position.y = 22;
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2;
+      const scythe = new THREE.Mesh(this.assets.jaulaRibGeo, this.assets.matVermilion);
+      scythe.position.set(Math.cos(a) * 20, 0, Math.sin(a) * 20);
+      scythe.rotation.set(Math.PI * 0.45, -a, 0, 'YXZ');
+      scythe.scale.setScalar(2.4);
+      b3Scythes.add(scythe);
+
+      const obelisk = new THREE.Mesh(this.assets.octaUnit, this.assets.matGold);
+      obelisk.scale.set(5, 13, 5);
+      obelisk.position.set(Math.cos(a + Math.PI * 0.25) * 31, 7, Math.sin(a + Math.PI * 0.25) * 31);
+      b3Scythes.add(obelisk);
+    }
+    model3.add(b3Scythes);
+    body.add(model3);
+
+    // =========================================================================
+    // BOSS 4 (1:59 — JEFE FINAL): EL RELICARIO ETERNO (Trono Catedralicio y Esfera Armilar)
+    // =========================================================================
+    const model4 = new THREE.Group();
+    const mat4Core = new THREE.MeshPhongMaterial({
+      color: '#3D0714',
+      emissive: '#CC0A30',
+      emissiveIntensity: 0.9,
+      shininess: 80
+    });
+    this.assets.trackMaterial(mat4Core);
+
+    // Corazón monolítico gigante + armadura dorada
+    const b4Heart = new THREE.Mesh(this.assets.octaUnit, mat4Core);
+    b4Heart.scale.set(24, 36, 24);
+    b4Heart.position.y = 34;
+    model4.add(b4Heart);
+
+    const b4Armor = new THREE.Mesh(this.assets.icosaUnit, this.assets.matGold);
+    b4Armor.scale.set(18, 27, 18);
+    b4Armor.position.y = 34;
+    model4.add(b4Armor);
+
+    // Corona superior de 8 Lanzas Sagradas flotantes
+    const b4CrownSpears = new THREE.Group();
+    b4CrownSpears.position.y = 62;
+    for (let s = 0; s < 8; s++) {
+      const a = (s / 8) * Math.PI * 2;
+      const spear = new THREE.Mesh(this.assets.octaUnit, this.assets.matGold);
+      spear.scale.set(2.6, 11, 2.6);
+      spear.position.set(Math.cos(a) * 14, 0, Math.sin(a) * 14);
+      b4CrownSpears.add(spear);
+    }
+    model4.add(b4CrownSpears);
+
+    // 4 Alas de Serafín doradas escoltando el núcleo
+    for (const side of [-1, 1]) {
+      const wTop = new THREE.Mesh(this.assets.desolladoWingGeo, this.assets.matGold);
+      wTop.scale.setScalar(2.4);
+      wTop.position.set(side * 22, 42, -4);
+      if (side === 1) wTop.rotation.y = Math.PI;
+      wTop.rotation.z = 0.35;
+      model4.add(wTop);
+
+      const wBot = new THREE.Mesh(this.assets.desolladoWingGeo, this.assets.matVermilion);
+      wBot.scale.setScalar(2.0);
+      wBot.position.set(side * 20, 24, -4);
+      if (side === 1) wBot.rotation.y = Math.PI;
+      wBot.rotation.z = -0.25;
+      model4.add(wBot);
+    }
+
+    // Ojo omnisciente central
+    const b4Eye = new THREE.Mesh(this.assets.octaUnit, this.assets.matIvory);
+    b4Eye.scale.set(9, 14, 9);
+    b4Eye.position.set(0, 34, 22);
+    model4.add(b4Eye);
+
+    // Triple giroscopio sagrado (3 grandes anillos concéntricos)
+    const b4Gyro1 = new THREE.Mesh(this.assets.torusUnit, this.assets.matGold);
+    b4Gyro1.scale.setScalar(40);
+    b4Gyro1.position.y = 34;
+
+    const b4Gyro2 = new THREE.Mesh(this.assets.torusUnit, this.assets.matVermilion);
+    b4Gyro2.scale.setScalar(32);
+    b4Gyro2.position.y = 34;
+
+    const b4Gyro3 = new THREE.Mesh(this.assets.torusUnit, this.assets.matColdSilver);
+    b4Gyro3.scale.setScalar(25);
+    b4Gyro3.position.y = 34;
+    model4.add(b4Gyro1, b4Gyro2, b4Gyro3);
+
+    // 8 Torres góticas flotantes que orbitan alrededor del Jefe Final
+    const b4Pillars = new THREE.Group();
+    b4Pillars.position.y = 24;
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      const pGroup = new THREE.Group();
+      pGroup.position.set(Math.cos(a) * 38, 0, Math.sin(a) * 38);
+      pGroup.rotation.y = -a;
+
+      const col = new THREE.Mesh(this.assets.boxUnit, i % 2 === 0 ? this.assets.matGold : this.assets.matVermilion);
+      col.scale.set(6, 24, 6);
+      pGroup.add(col);
+
+      const cap = new THREE.Mesh(this.assets.octaUnit, this.assets.matIvory);
+      cap.scale.set(5, 8, 5);
+      cap.position.y = 16;
+      pGroup.add(cap);
+
+      b4Pillars.add(pGroup);
+    }
+    model4.add(b4Pillars);
+    body.add(model4);
+
+    this.worldGroup.add(root);
+    this.bossVisual = {
+      root,
+      body,
+      auraRing,
+      innerAuraRing,
+      auraMat,
+      models: {
+        1: model1,
+        2: model2,
+        3: model3,
+        4: model4
+      },
+      mats: {
+        1: { mat: mat1Core, baseHex: '#B8330A' },
+        2: { mat: mat2Core, baseHex: '#198A85' },
+        3: { mat: mat3Core, baseHex: '#7E18BF' },
+        4: { mat: mat4Core, baseHex: '#CC0A30' }
+      },
+      parts: {
+        b1Hammers,
+        b1Furnace,
+        b1ArmsGroup,
+        b2LeftWings,
+        b2RightWings,
+        b2Ring1,
+        b2Ring2,
+        b2SunHalo,
+        b3Scythes,
+        b3SwordsFan,
+        b4Heart,
+        b4CrownSpears,
+        b4Gyro1,
+        b4Gyro2,
+        b4Gyro3,
+        b4Pillars
+      }
+    };
+  }
+
   #buildPopupPool() {
     for (let i = 0; i < POPUP_POOL_SIZE; i++) {
       const mat = new THREE.SpriteMaterial({
@@ -490,8 +977,28 @@ export class PanicArena3D {
     window.addEventListener('resize', this._onResize);
 
     this._onKeyDown = (e) => {
+      if (this.activeUpgradeDraft && this.activeUpgradeDraft.options) {
+        if (e.code === 'Digit1' || e.code === 'Numpad1') {
+          e.preventDefault();
+          const opt = this.activeUpgradeDraft.options[0];
+          if (opt) this.selectUpgrade(opt.id);
+          return;
+        }
+        if (e.code === 'Digit2' || e.code === 'Numpad2') {
+          e.preventDefault();
+          const opt = this.activeUpgradeDraft.options[1];
+          if (opt) this.selectUpgrade(opt.id);
+          return;
+        }
+        if (e.code === 'Digit3' || e.code === 'Numpad3') {
+          e.preventDefault();
+          const opt = this.activeUpgradeDraft.options[2];
+          if (opt) this.selectUpgrade(opt.id);
+          return;
+        }
+      }
       if (e.code === 'Escape' || e.code === 'KeyP') {
-        if (!this.hasEnded && typeof this.onPauseShortcut === 'function') {
+        if (!this.hasEnded && !this.activeUpgradeDraft && typeof this.onPauseShortcut === 'function') {
           e.preventDefault();
           this.onPauseShortcut();
         }
@@ -539,7 +1046,7 @@ export class PanicArena3D {
     };
 
     this._onPointerDown = (e) => {
-      if (this.hasEnded || this.isUserPaused || this.activePointerId !== null) return;
+      if (this.hasEnded || this.isUserPaused || this.activeUpgradeDraft || this.activePointerId !== null) return;
       if (e.button !== undefined && e.button !== 0 && e.pointerType === 'mouse') return;
       this.audio?.unlock();
       this.activePointerId = e.pointerId;
@@ -802,6 +1309,14 @@ export class PanicArena3D {
   }
 
   #stepSimulation(dt) {
+    // Pausa táctica mientras el jugador elige una mejora de subida de nivel
+    if (this.activeUpgradeDraft) {
+      this.playerVisual.body.visible = true;
+      this.#animateAmbientEmbers(dt);
+      this.#updateCamera(dt * 4.5);
+      return;
+    }
+
     // Pausa automática de 5 segundos al cambiar de fase (sin ataques ni daño, con cuenta atrás)
     if (this.phaseTransition && this.phaseTransition.active) {
       this.phaseTransition.remainingSec = Math.max(0, this.phaseTransition.remainingSec - dt);
@@ -820,28 +1335,39 @@ export class PanicArena3D {
       return;
     }
 
-    this.elapsedTime += dt;
+    // El reloj de supervivencia avanza mientras no haya un Boss activo bloqueando el paso
+    if (!this.activeBoss) {
+      this.elapsedTime += dt;
+    }
 
-    // Cambio de Fase 1 (0-40s: 1985) -> Fase 2 (40-80s: Híbrido)
+    // Progresión continua de 2 minutos sin cortes ni pausas entre tramos
     if (this.currentPhaseIndex === 0 && this.elapsedTime >= 40.0) {
-      this.elapsedTime = 40.0;
       this.phaseStats.classic1985.survivedSeconds = 40.0;
       this.phaseStats.classic1985.didSurvive = true;
-      this.#triggerPhaseTransition(1);
-      return;
+      this.currentPhaseIndex = 1;
+      this.modeDef = CAMPAIGN_PHASES[1];
+      this.phaseStats.hybrid1985x2026.entered = true;
     }
 
-    // Cambio de Fase 2 (40-80s: Híbrido) -> Fase 3 (80-120s: IA Directora 2026)
     if (this.currentPhaseIndex === 1 && this.elapsedTime >= 80.0) {
-      this.elapsedTime = 80.0;
       this.phaseStats.hybrid1985x2026.survivedSeconds = 40.0;
       this.phaseStats.hybrid1985x2026.didSurvive = true;
-      this.#triggerPhaseTransition(2);
-      return;
+      this.currentPhaseIndex = 2;
+      this.modeDef = CAMPAIGN_PHASES[2];
+      this.phaseStats.director2026.entered = true;
     }
 
-    // Fin de la partida unificada de 2 minutos (120s)
-    if (this.elapsedTime >= TOTAL_RUN_DURATION) {
+    // Jefes a los 30s, 60s, 90s y Jefe Final en 1:59 (119s)
+    if (!this.activeBoss && this.bossesSpawned < this.bossSchedule.length) {
+      const targetBossTime = this.bossSchedule[this.bossesSpawned];
+      if (this.elapsedTime >= targetBossTime) {
+        this.elapsedTime = targetBossTime;
+        this.#spawnBoss(this.bossesSpawned + 1);
+      }
+    }
+
+    // Fin de la partida sólo cuando se ha derrotado también al Jefe Final de 1:59
+    if (!this.activeBoss && this.bossesSpawned >= 4 && this.elapsedTime >= TOTAL_RUN_DURATION) {
       this.elapsedTime = TOTAL_RUN_DURATION;
       this.phaseStats.director2026.survivedSeconds = 40.0;
       this.phaseStats.director2026.didSurvive = true;
@@ -856,9 +1382,9 @@ export class PanicArena3D {
       this.playerVisual.body.visible = true;
     }
 
-    // 1. Movimiento del jugador (escala agilidad con el nivel)
+    // 1. Movimiento del jugador (la velocidad depende de la mejora Paso Fantasma según su rareza)
     const move = this.#resolveMoveInput();
-    const speedBonus = 1.0 + Math.min(0.30, (this.playerLevel - 1) * 0.05);
+    const speedBonus = 1.0 + this.upgradeStats.speedBonus;
     const effectiveSpeed = BASE_PLAYER_SPEED * speedBonus;
     this.playerVelocity.dx = move.dx * effectiveSpeed;
     this.playerVelocity.dy = move.dy * effectiveSpeed;
@@ -899,7 +1425,7 @@ export class PanicArena3D {
     const stressValue = this.stressTracker.update({
       dt,
       moveVector: move,
-      playerHPNormalized: this.playerHP / PLAYER_MAX_HP,
+      playerHPNormalized: this.playerHP / this.playerMaxHP,
       nearestEnemyDistance: nearestDist,
       enemiesInsideDangerRing: dangerCount,
       enemiesInsidePanicRing: panicCount,
@@ -924,28 +1450,140 @@ export class PanicArena3D {
     }
     this.previousStressTier = newTier;
 
-    // 3. Evaluación del motor de IA unificado por tramos (0-40s 1985, 40-80s Híbrido, 80-120s IA 2026)
-    const directive = this.waveDirector.evaluate({
+    // 3. Evaluación del motor de IA + Adaptación Bidireccional en Vivo (+Enemigos si vas muy bien, -Enemigos si vas mal)
+    const rawDirective = this.waveDirector.evaluate({
       dt,
       elapsedTime: this.elapsedTime,
       stressIndex: stressValue,
       stressTier: newTier,
-      playerHPNormalized: this.playerHP / PLAYER_MAX_HP,
+      playerHPNormalized: this.playerHP / this.playerMaxHP,
       playerVelocity: this.playerVelocity,
       activeEnemyCount: this.enemies.length,
       activeMedkitCount: this.medkits.length
     });
+
+    this.aiRescueMedkitTimer = Math.max(0, this.aiRescueMedkitTimer - dt);
+    const hpRatio = this.playerHP / Math.max(1, this.playerMaxHP);
+    const moveMag = Math.hypot(this.playerVelocity.dx, this.playerVelocity.dy);
+    const escapeAngle = moveMag > 12.0 ? Math.atan2(this.playerVelocity.dy, this.playerVelocity.dx) : null;
+
+    let spawnIntervalMult = 1.0;
+    let maxEnemiesMult = 1.0;
+    let speedMult = 1.0;
+    let extraDoubleSpawn = false;
+    let forceRescueMedkit = false;
+    let safeAngle = rawDirective.safeEscapeCenterAngle;
+    let safeCone = rawDirective.safeEscapeHalfConeRadians;
+    let suppressLunges = rawDirective.suppressSimultaneousLunges;
+
+    if (this.activeBoss) {
+      if (hpRatio <= 0.35 || stressValue >= 78) {
+        speedMult = 0.86;
+        if (this.medkits.length < 2 && this.aiRescueMedkitTimer <= 0) {
+          forceRescueMedkit = true;
+          this.aiRescueMedkitTimer = 7.5;
+        }
+        this.currentAiState = {
+          mode: 'rescue',
+          badge: '❤️ AYUDA IA',
+          text: 'Jefe frenado + Botiquín de ayuda',
+          color: RELICARIO_PALETTE.graceJade,
+          spawnMult: 0
+        };
+      } else {
+        this.currentAiState = {
+          mode: 'boss',
+          badge: '💀 DUELO JEFE',
+          text: 'Horda pausada hasta derrotar al Jefe',
+          color: this.activeBoss.color || RELICARIO_PALETTE.vermilion,
+          spawnMult: 0
+        };
+      }
+    } else if (hpRatio <= 0.34 || stressValue >= 74 || panicCount >= 3) {
+      // VAS MAL / EN APUROS -> La IA frena drásticamente la llegada de enemigos y te ayuda
+      spawnIntervalMult = 2.15;
+      maxEnemiesMult = 0.54;
+      speedMult = 0.82;
+      safeAngle = escapeAngle;
+      safeCone = Math.PI * 0.28;
+      suppressLunges = true;
+      if (this.medkits.length < 3 && this.aiRescueMedkitTimer <= 0) {
+        forceRescueMedkit = true;
+        this.aiRescueMedkitTimer = 6.5;
+      }
+      this.currentAiState = {
+        mode: 'rescue',
+        badge: '▼▼ MUY POCOS ENEMIGOS',
+        text: 'En apuros · La IA frena la horda y envía curas',
+        color: RELICARIO_PALETTE.graceJade,
+        spawnMult: 0.45
+      };
+    } else if (hpRatio <= 0.52 || stressValue >= 56 || dangerCount >= 4) {
+      // MUCHA PRESIÓN -> La IA reduce enemigos para darte aire
+      spawnIntervalMult = 1.48;
+      maxEnemiesMult = 0.74;
+      speedMult = 0.90;
+      safeAngle = escapeAngle;
+      safeCone = Math.PI * 0.22;
+      suppressLunges = true;
+      this.currentAiState = {
+        mode: 'relief',
+        badge: '▼ MENOS ENEMIGOS',
+        text: 'Mucha presión · La IA reduce enemigos',
+        color: RELICARIO_PALETTE.coldSilver,
+        spawnMult: 0.7
+      };
+    } else if (stressValue < 36 && hpRatio >= 0.74 && panicCount === 0) {
+      // VAS MUY BIEN / SOBRADO -> La IA envía más enemigos para mantener la emoción
+      spawnIntervalMult = 0.62;
+      maxEnemiesMult = 1.28;
+      speedMult = 1.12;
+      extraDoubleSpawn = this.enemies.length < 14;
+      this.currentAiState = {
+        mode: 'push',
+        badge: '▲ +ENEMIGOS',
+        text: 'Vas muy bien · La IA envía más enemigos',
+        color: RELICARIO_PALETTE.emberOrange,
+        spawnMult: 1.5
+      };
+    } else {
+      // RITMO EQUILIBRADO
+      this.currentAiState = {
+        mode: 'balanced',
+        badge: '● EQUILIBRADO',
+        text: 'Ritmo ideal · Horda estable',
+        color: RELICARIO_PALETTE.liturgicalGold,
+        spawnMult: 1.0
+      };
+    }
+
+    const directive = {
+      ...rawDirective,
+      spawnInterval: Math.max(0.09, rawDirective.spawnInterval * spawnIntervalMult),
+      maxActiveEnemies: Math.max(10, Math.round(rawDirective.maxActiveEnemies * maxEnemiesMult)),
+      enemySpeedMultiplier: rawDirective.enemySpeedMultiplier * speedMult,
+      safeEscapeCenterAngle: safeAngle,
+      safeEscapeHalfConeRadians: safeCone,
+      suppressSimultaneousLunges: suppressLunges,
+      spawnEmergencyMedkit: rawDirective.spawnEmergencyMedkit || forceRescueMedkit,
+      medkitBiasAhead: rawDirective.medkitBiasAhead || forceRescueMedkit
+    };
     this.lastDirective = directive;
 
     if (directive.spawnEmergencyMedkit) {
       this.#spawnMedkit(directive.medkitBiasAhead);
     }
 
-    // 4. Aparición de criaturas según directiva
-    this.spawnTimer -= dt;
-    if (this.spawnTimer <= 0 && this.enemies.length < directive.maxActiveEnemies) {
-      this.#spawnEnemy(directive);
-      this.spawnTimer = directive.spawnInterval;
+    // 4. Mientras haya un Boss activo NO salen enemigos normales
+    if (!this.activeBoss) {
+      this.spawnTimer -= dt;
+      if (this.spawnTimer <= 0 && this.enemies.length < directive.maxActiveEnemies) {
+        this.#spawnEnemy(directive);
+        if (extraDoubleSpawn && this.enemies.length < directive.maxActiveEnemies) {
+          this.#spawnEnemy(directive);
+        }
+        this.spawnTimer = directive.spawnInterval;
+      }
     }
 
     // 5. Auto-disparo y animación 3D del avatar
@@ -958,8 +1596,10 @@ export class PanicArena3D {
       this.elapsedTime
     );
 
-    // 6. Proyectiles, criaturas, proyectiles hostiles y curas
+    // 6. Proyectiles, Jefe, criaturas, proyectiles hostiles y curas
     this.#updateProjectiles(dt);
+    this.#updateBoss(dt, directive);
+    if (this.hasEnded) return;
     this.#updateEnemies(dt, directive);
     if (this.hasEnded) return;
     this.#updateEnemyProjectiles(dt);
@@ -1036,28 +1676,42 @@ export class PanicArena3D {
     const angle = Math.atan2(target.pos.y - this.playerPos.y, target.pos.x - this.playerPos.x);
     if (this.fireTimer > 0) return angle;
 
-    this.fireTimer = Math.max(0.125, 0.24 * Math.pow(0.91, this.playerLevel - 1));
-    const damage = this.playerLevel >= 6 ? 3 : this.playerLevel >= 3 ? 2 : 1;
+    const rateDivisor = 1.0 + this.upgradeStats.rateBonus;
+    this.fireTimer = Math.max(0.068, 0.22 / rateDivisor);
 
-    let spreadOffsets;
-    if (this.playerLevel === 1) {
-      spreadOffsets = [0.0];
-    } else if (this.playerLevel <= 3) {
-      spreadOffsets = [-0.08, 0.08];
-    } else if (this.playerLevel <= 5) {
-      spreadOffsets = [-0.13, 0.0, 0.13];
+    const damage = Number((1.15 * (1.0 + this.upgradeStats.dmgBonus)).toFixed(2));
+
+    const guaranteedExtra = Math.floor(this.upgradeStats.extraShots);
+    const fractionalExtra = this.upgradeStats.extraShots - guaranteedExtra;
+    const bonusShot = Math.random() < fractionalExtra ? 1 : 0;
+    const totalShots = Math.min(7, 1 + guaranteedExtra + bonusShot);
+
+    const spreadOffsets = [];
+    if (totalShots === 1) {
+      spreadOffsets.push(0.0);
     } else {
-      spreadOffsets = [-0.16, -0.055, 0.055, 0.16];
+      const totalArc = Math.min(0.48, (totalShots - 1) * 0.095);
+      const startArc = -totalArc * 0.5;
+      const stepArc = totalArc / (totalShots - 1);
+      for (let s = 0; s < totalShots; s++) {
+        spreadOffsets.push(startArc + s * stepArc);
+      }
     }
 
-    const tierStep = Math.min(5, this.playerLevel - 1);
-    const shardScale = 3.8 * (1.0 + tierStep * 0.07);
-    const speed = 590.0 + tierStep * 28.0;
-    const color = this.playerLevel >= 5
-      ? this._colGold
-      : this.playerLevel >= 3
-        ? this._colColdSilver
-        : this._colIvory;
+    const shardScale =
+      3.8 *
+      (1.0 + Math.min(0.45, this.upgradeStats.dmgBonus * 0.14) + this.upgradeStats.scaleBonus);
+    const speed = 580.0 + this.upgradeStats.projSpeedBonus;
+    const color =
+      this.upgradeStats.dmgBonus >= 0.70
+        ? this._colGold
+        : this.upgradeStats.rateBonus >= 0.22 || this.upgradeStats.extraShots >= 0.5
+          ? this._colColdSilver
+          : this._colIvory;
+
+    const guaranteedPierce = Math.floor(this.upgradeStats.pierceBonus);
+    const fracPierce = this.upgradeStats.pierceBonus - guaranteedPierce;
+    const pierceLeft = guaranteedPierce + (Math.random() < fracPierce ? 1 : 0);
 
     for (let i = 0; i < spreadOffsets.length; i++) {
       if (this.projectiles.length >= POOL_CAPS.PLAYER_PROJ) break;
@@ -1072,8 +1726,10 @@ export class PanicArena3D {
         angle: shotAngle,
         scale: shardScale,
         color,
-        remainingLife: 1.05,
-        damage
+        remainingLife: 1.08,
+        damage,
+        pierceLeft,
+        lastHitEnemy: null
       });
     }
 
@@ -1086,6 +1742,15 @@ export class PanicArena3D {
     let bestDistSq = maxRange * maxRange;
     const px = this.playerPos.x;
     const py = this.playerPos.y;
+    if (this.activeBoss) {
+      const bdx = this.activeBoss.pos.x - px;
+      const bdy = this.activeBoss.pos.y - py;
+      const bdSq = bdx * bdx + bdy * bdy;
+      if (bdSq < bestDistSq) {
+        bestDistSq = bdSq;
+        best = this.activeBoss;
+      }
+    }
     for (let i = 0; i < this.enemies.length; i++) {
       const e = this.enemies[i];
       const dx = e.pos.x - px;
@@ -1116,10 +1781,29 @@ export class PanicArena3D {
         continue;
       }
 
-      const hitPadding = 6.5 + (p.damage - 1) * 1.2;
+      const hitPadding = 6.5 + (p.damage - 1) * 1.1 + this.upgradeRanks.pierce * 1.2;
+
+      // Impacto contra el Boss activo
+      if (this.activeBoss && p.lastHitEnemy !== this.activeBoss) {
+        const bdx = this.activeBoss.pos.x - p.x;
+        const bdy = this.activeBoss.pos.y - p.y;
+        const bRad = this.activeBoss.hitRadius + hitPadding;
+        if (bdx * bdx + bdy * bdy <= bRad * bRad) {
+          const bossRef = this.activeBoss;
+          this.#applyHitToBoss(p.damage, p.dx, p.dy, p.x, p.y);
+          if (p.pierceLeft > 0 && this.activeBoss) {
+            p.pierceLeft -= 1;
+            p.lastHitEnemy = bossRef;
+            this.projectiles[writeIdx++] = p;
+          }
+          continue;
+        }
+      }
+
       let hitIdx = -1;
       for (let j = 0; j < this.enemies.length; j++) {
         const e = this.enemies[j];
+        if (p.lastHitEnemy === e) continue;
         const dx = e.pos.x - p.x;
         const dy = e.pos.y - p.y;
         const rad = e.hitRadius + hitPadding;
@@ -1130,7 +1814,13 @@ export class PanicArena3D {
       }
 
       if (hitIdx >= 0) {
+        const hitEnemyRef = this.enemies[hitIdx];
         this.#applyHitToEnemy(hitIdx, p.damage, p.dx, p.dy, p.x, p.y);
+        if (p.pierceLeft > 0) {
+          p.pierceLeft -= 1;
+          p.lastHitEnemy = hitEnemyRef;
+          this.projectiles[writeIdx++] = p;
+        }
       } else {
         this.projectiles[writeIdx++] = p;
       }
@@ -1138,15 +1828,891 @@ export class PanicArena3D {
     this.projectiles.length = writeIdx;
   }
 
+  #spawnBoss(bossNumber) {
+    this.bossesSpawned = bossNumber;
+    this.bossZones.length = 0;
+
+    const BOSS_CATALOG = [
+      {
+        // 30s — Boss 1: Gólem Óseo de Fuego (Doble Salto Sísmico + Muro de Lava + Géiseres de Magma)
+        title: 'COLOSO DE CENIZA',
+        subtitle: 'Salto Sísmico, Muro de Lava y Géiseres',
+        isFinal: false,
+        baseHP: 260,
+        speed: 70,
+        hitRadius: 34,
+        contactDamage: 18,
+        xpReward: 95,
+        color: RELICARIO_PALETTE.emberOrange
+      },
+      {
+        // 60s — Boss 2: Ángel Caído de Cristal (Galaxia de 4 Aspas + Abanico de Plumas + Vuelo con Sellos)
+        title: 'SERAFÍN CORRUPTO',
+        subtitle: 'Galaxia Astral, Abanico y Sellos de Luz',
+        isFinal: false,
+        baseHP: 420,
+        speed: 82,
+        hitRadius: 33,
+        contactDamage: 19,
+        xpReward: 130,
+        color: RELICARIO_PALETTE.coldSilver
+      },
+      {
+        // 90s — Boss 3: Verdugo Abisal (Reloj de Espadas + Jaula Octogonal + Vórtice Segador)
+        title: 'INQUISIDOR ABISAL',
+        subtitle: 'Reloj de Espadas, Jaula y Vórtice',
+        isFinal: false,
+        baseHP: 600,
+        speed: 86,
+        hitRadius: 35,
+        contactDamage: 20,
+        xpReward: 175,
+        color: '#A855F7'
+      },
+      {
+        // 1:59 (119s) — JEFE FINAL: Catedral Viviente (Galaxia Inversa + Cruz Catedralicia + Sellos + Carga)
+        title: 'EL RELICARIO ETERNO',
+        subtitle: 'JEFE FINAL · DERRÓTALO PARA GANAR',
+        isFinal: true,
+        baseHP: 960,
+        speed: 92,
+        hitRadius: 42,
+        contactDamage: 22,
+        xpReward: 350,
+        color: '#FACC15'
+      }
+    ];
+    const cfg = BOSS_CATALOG[Math.min(BOSS_CATALOG.length - 1, bossNumber - 1)];
+
+    // Despejar la arena de enemigos menores para que sea un duelo puro contra el Boss
+    for (let i = 0; i < this.enemies.length; i++) {
+      const e = this.enemies[i];
+      this.#spawnBurst(e.pos.x, e.pos.y, RELICARIO_PALETTE.oldBone, 5, 90);
+    }
+    this.enemies.length = 0;
+    this.enemyProjectiles.length = 0;
+
+    // Aparecer en el extremo opuesto al jugador dentro de la arena
+    const spawnX = this.playerPos.x > 0 ? -105 : 105;
+    const spawnY = this.playerPos.y > 0 ? -155 : 155;
+    const lvlBonus = Math.max(0, this.playerLevel - 1) * (cfg.isFinal ? 55 : 32);
+    const maxHP = Math.round(cfg.baseHP + lvlBonus);
+
+    this.activeBoss = {
+      bossNumber,
+      title: cfg.title,
+      subtitle: cfg.subtitle,
+      isFinal: cfg.isFinal,
+      enraged: false,
+      pos: { x: spawnX, y: spawnY },
+      hp: maxHP,
+      maxHP,
+      baseSpeed: cfg.speed,
+      hitRadius: cfg.hitRadius,
+      contactDamage: cfg.contactDamage,
+      xpReward: cfg.xpReward,
+      color: cfg.color,
+      age: 0,
+      flashTimer: 0,
+      attackTimer: 1.6,
+      attackIndex: 0,
+      subTimer: 0,
+      subStep: 0,
+      spiralAngle: 0,
+      state: 'chasing',
+      stateTimer: 0,
+      dashVel: { dx: 0, dy: 0 },
+      facingAngle: Math.atan2(this.playerPos.y - spawnY, this.playerPos.x - spawnX)
+    };
+
+    if (this.bossVisual) {
+      this.bossVisual.root.visible = true;
+      this.bossVisual.root.position.set(spawnX, 0, -spawnY);
+      this.bossVisual.auraMat.color.set(cfg.color);
+      for (const k of [1, 2, 3, 4]) {
+        if (this.bossVisual.models[k]) {
+          this.bossVisual.models[k].visible = k === bossNumber;
+        }
+      }
+    }
+
+    this.#spawnShockRing(spawnX, spawnY, cfg.color, cfg.isFinal ? 130 : 95);
+    this.#spawnBurst(spawnX, spawnY, cfg.color, cfg.isFinal ? 32 : 22, 160);
+    this.#spawnPopupText(
+      cfg.isFinal ? `👑 ¡JEFE FINAL: ${cfg.title}!` : `💀 ¡${cfg.title}!`,
+      spawnX,
+      spawnY + 42,
+      cfg.color
+    );
+    this.#triggerShake(cfg.isFinal ? 9.0 : 6.5);
+    this.audio?.triggerLevelUp?.();
+    this.#publishHUDNow(null);
+  }
+
+  #updateBoss(dt, directive) {
+    const boss = this.activeBoss;
+    if (!boss) {
+      if (this.bossVisual && this.bossVisual.root.visible) {
+        this.bossVisual.root.visible = false;
+      }
+      this.bossZones.length = 0;
+      return;
+    }
+
+    boss.age += dt;
+    if (boss.flashTimer > 0) {
+      boss.flashTimer = Math.max(0, boss.flashTimer - dt);
+    }
+
+    // Fase 2 de Ira para el Jefe Final al bajar del 50% de vida
+    if (boss.isFinal && !boss.enraged && boss.hp <= boss.maxHP * 0.5) {
+      boss.enraged = true;
+      boss.color = RELICARIO_PALETTE.vermilion;
+      if (this.bossVisual) {
+        this.bossVisual.auraMat.color.set(RELICARIO_PALETTE.vermilion);
+      }
+      this.#spawnShockRing(boss.pos.x, boss.pos.y, RELICARIO_PALETTE.vermilion, 135);
+      this.#spawnBurst(boss.pos.x, boss.pos.y, RELICARIO_PALETTE.liturgicalGold, 28, 175);
+      this.#spawnPopupText('🔥 ¡IRA DEL RELICARIO!', boss.pos.x, boss.pos.y + 48, RELICARIO_PALETTE.vermilion);
+      this.#triggerShake(8.5);
+    }
+
+    // Actualizar zonas/sellos explosivos en el suelo (Boss 1 Géiseres, Boss 2 Sellos de Luz, Boss 4 Pilares)
+    let zw = 0;
+    for (let i = 0; i < this.bossZones.length; i++) {
+      const z = this.bossZones[i];
+      z.remaining -= dt;
+      if (z.remaining <= 0) {
+        const zColor = z.color || RELICARIO_PALETTE.vermilion;
+        this.#spawnShockRing(z.x, z.y, zColor, z.radius * 1.18);
+        this.#spawnBurst(z.x, z.y, RELICARIO_PALETTE.liturgicalGold, 15, 135);
+        const pdx = this.playerPos.x - z.x;
+        const pdy = this.playerPos.y - z.y;
+        if (pdx * pdx + pdy * pdy <= z.radius * z.radius && this.invulnerabilityTimer <= 0 && !this.hasEnded) {
+          this.#applyDamageToPlayer(18);
+        }
+        const shardCount = z.shards || 6;
+        for (let k = 0; k < shardCount; k++) {
+          if (this.enemyProjectiles.length >= POOL_CAPS.ENEMY_PROJ) break;
+          const a = (k / shardCount) * Math.PI * 2 + z.angleOffset;
+          this.enemyProjectiles.push({
+            x: z.x + Math.cos(a) * 10,
+            y: z.y + Math.sin(a) * 10,
+            dx: Math.cos(a) * 215,
+            dy: Math.sin(a) * 215,
+            angle: a,
+            remainingLife: 1.85,
+            damage: 14
+          });
+        }
+      } else {
+        this.bossZones[zw++] = z;
+      }
+    }
+    this.bossZones.length = zw;
+
+    const toX = this.playerPos.x - boss.pos.x;
+    const toY = this.playerPos.y - boss.pos.y;
+    const dist = Math.max(0.001, Math.hypot(toX, toY));
+    const dirX = toX / dist;
+    const dirY = toY / dist;
+    const angleToPlayer = Math.atan2(dirY, dirX);
+    const enrageMult = boss.enraged ? 1.24 : 1.0;
+
+    // -------------------------------------------------------------------------
+    // PATRONES ÚNICOS MEJORADOS POR CADA UNO DE LOS 4 BOSSES
+    // -------------------------------------------------------------------------
+    if (boss.state === 'chasing') {
+      boss.facingAngle = angleToPlayer;
+      const moveSpeed = boss.baseSpeed * enrageMult * Math.min(1.2, directive?.enemySpeedMultiplier || 1.0);
+      boss.pos.x += dirX * moveSpeed * dt;
+      boss.pos.y += dirY * moveSpeed * dt;
+
+      boss.attackTimer -= dt * enrageMult;
+      if (boss.attackTimer <= 0) {
+        if (boss.bossNumber === 1) {
+          // BOSS 1: Coloso de Ceniza -> 3 patrones: (0) Salto Sísmico Doble Onda, (1) Muro de Lava con Hueco, (2) 3 Géiseres de Magma
+          const pick = boss.attackIndex % 3;
+          if (pick === 0) {
+            boss.state = 'b1_quake_prep';
+            boss.stateTimer = 0.62;
+            boss.subStep = 0;
+            boss.facingAngle = angleToPlayer;
+            this.#spawnShockRing(boss.pos.x, boss.pos.y, RELICARIO_PALETTE.emberOrange, 68);
+          } else if (pick === 1) {
+            boss.state = 'b1_lava_wall';
+            boss.stateTimer = 0.65;
+            boss.subStep = 0;
+            boss.facingAngle = angleToPlayer;
+            this.#spawnShockRing(boss.pos.x, boss.pos.y, RELICARIO_PALETTE.liturgicalGold, 60);
+          } else {
+            boss.state = 'b1_geysers';
+            boss.stateTimer = 0.55;
+            for (let g = 0; g < 3; g++) {
+              const a = angleToPlayer + (g - 1) * 0.65;
+              const d = g === 1 ? Math.min(145, dist) : 85;
+              const gx = Math.min(Math.max(boss.pos.x + Math.cos(a) * d, ARENA_BOUNDS.minX + 34), ARENA_BOUNDS.maxX - 34);
+              const gy = Math.min(Math.max(boss.pos.y + Math.sin(a) * d, ARENA_BOUNDS.minY + 34), ARENA_BOUNDS.maxY - 34);
+              this.bossZones.push({
+                x: gx,
+                y: gy,
+                radius: 40,
+                remaining: 0.85 + g * 0.14,
+                maxTime: 0.85 + g * 0.14,
+                angleOffset: g * 0.5,
+                shards: 6,
+                color: RELICARIO_PALETTE.emberOrange
+              });
+            }
+            this.#spawnShockRing(boss.pos.x, boss.pos.y, RELICARIO_PALETTE.emberOrange, 72);
+          }
+        } else if (boss.bossNumber === 2) {
+          // BOSS 2: Serafín Corrupto -> 3 patrones: (0) Galaxia Molinete 4 Aspas, (1) Péndulo de Plumas, (2) Vuelo Valquiria con Sellos
+          const pick = boss.attackIndex % 3;
+          if (pick === 0) {
+            boss.state = 'b2_spiral';
+            boss.stateTimer = 1.28;
+            boss.subTimer = 0;
+            boss.spiralAngle = angleToPlayer;
+            this.#spawnShockRing(boss.pos.x, boss.pos.y, RELICARIO_PALETTE.coldSilver, 68);
+          } else if (pick === 1) {
+            boss.state = 'b2_pendulum';
+            boss.stateTimer = 0.90;
+            boss.subTimer = 0;
+            boss.subStep = 0;
+            boss.facingAngle = angleToPlayer;
+            this.#spawnShockRing(boss.pos.x, boss.pos.y, RELICARIO_PALETTE.liturgicalGold, 64);
+          } else {
+            boss.state = 'b2_dash_prep';
+            boss.stateTimer = 0.48;
+            boss.subStep = 0;
+            boss.facingAngle = angleToPlayer;
+            this.#spawnShockRing(boss.pos.x, boss.pos.y, RELICARIO_PALETTE.graceJade, 62);
+          }
+        } else if (boss.bossNumber === 3) {
+          // BOSS 3: Inquisidor Abisal -> 3 patrones: (0) Reloj de 8 Espadas Espectrales, (1) Doble Jaula Octogonal, (2) Vórtice Segador
+          const pick = boss.attackIndex % 3;
+          if (pick === 0) {
+            boss.state = 'b3_sword_clock';
+            boss.stateTimer = 0.96;
+            boss.subTimer = 0;
+            boss.subStep = 0;
+            this.#spawnShockRing(boss.pos.x, boss.pos.y, '#A855F7', 72);
+          } else if (pick === 1) {
+            boss.state = 'b3_cross_waves';
+            boss.stateTimer = 0.78;
+            boss.subStep = 0;
+            this.#spawnShockRing(boss.pos.x, boss.pos.y, '#A855F7', 68);
+          } else {
+            boss.state = 'b3_whirlwind';
+            boss.stateTimer = 1.40;
+            boss.subTimer = 0;
+            this.#spawnShockRing(boss.pos.x, boss.pos.y, RELICARIO_PALETTE.vermilion, 74);
+          }
+        } else {
+          // BOSS 4 (JEFE FINAL): El Relicario Eterno -> 4 patrones épicos
+          const pick = boss.attackIndex % 4;
+          if (pick === 0) {
+            boss.state = 'b4_judgment';
+            boss.stateTimer = 1.35;
+            boss.subTimer = 0;
+            boss.spiralAngle = angleToPlayer;
+            this.#spawnShockRing(boss.pos.x, boss.pos.y, '#FACC15', 90);
+          } else if (pick === 1) {
+            boss.state = 'b4_pillars';
+            boss.stateTimer = 0.58;
+            const count = boss.enraged ? 5 : 4;
+            for (let z = 0; z < count; z++) {
+              const a = (z / count) * Math.PI * 2 + boss.age;
+              const distZ = z === 0 ? 16 : 82;
+              const zx = Math.min(Math.max(this.playerPos.x + Math.cos(a) * distZ, ARENA_BOUNDS.minX + 34), ARENA_BOUNDS.maxX - 34);
+              const zy = Math.min(Math.max(this.playerPos.y + Math.sin(a) * distZ, ARENA_BOUNDS.minY + 34), ARENA_BOUNDS.maxY - 34);
+              this.bossZones.push({
+                x: zx,
+                y: zy,
+                radius: 44,
+                remaining: 0.85 + z * 0.08,
+                maxTime: 0.85 + z * 0.08,
+                angleOffset: z * 0.4,
+                shards: 6,
+                color: '#FACC15'
+              });
+            }
+            this.#spawnShockRing(boss.pos.x, boss.pos.y, RELICARIO_PALETTE.vermilion, 84);
+          } else if (pick === 2) {
+            boss.state = 'b4_cross_laser';
+            boss.stateTimer = 1.15;
+            boss.subTimer = 0;
+            boss.spiralAngle = angleToPlayer;
+            this.#spawnShockRing(boss.pos.x, boss.pos.y, '#FACC15', 86);
+          } else {
+            boss.state = 'b4_apocalypse_prep';
+            boss.stateTimer = 0.55;
+            boss.subTimer = 0;
+            boss.facingAngle = angleToPlayer;
+            this.#spawnShockRing(boss.pos.x, boss.pos.y, '#FACC15', 84);
+          }
+        }
+        boss.attackIndex += 1;
+      }
+    }
+    // --- ATAQUES BOSS 1 (COLOSO DE CENIZA) ---
+    else if (boss.state === 'b1_quake_prep') {
+      if (boss.stateTimer > 0.18) boss.facingAngle = angleToPlayer;
+      boss.stateTimer -= dt;
+      if (boss.stateTimer <= 0) {
+        boss.dashVel.dx = Math.cos(boss.facingAngle) * 375;
+        boss.dashVel.dy = Math.sin(boss.facingAngle) * 375;
+        boss.state = 'b1_quake_leap';
+        boss.stateTimer = 0.38;
+      }
+    } else if (boss.state === 'b1_quake_leap') {
+      boss.pos.x += boss.dashVel.dx * dt;
+      boss.pos.y += boss.dashVel.dy * dt;
+      boss.stateTimer -= dt;
+      if (boss.stateTimer <= 0) {
+        // Impacto sísmico doble onda: corona interior rápida (8 rocas) + corona exterior desplazada (8 rocas)
+        this.#spawnShockRing(boss.pos.x, boss.pos.y, RELICARIO_PALETTE.emberOrange, 102);
+        this.#spawnShockRing(boss.pos.x, boss.pos.y, RELICARIO_PALETTE.liturgicalGold, 66);
+        this.#triggerShake(6.5);
+        for (let ring = 0; ring < 2; ring++) {
+          const spd = ring === 0 ? 225 : 155;
+          const rotOffset = ring * (Math.PI / 8);
+          for (let i = 0; i < 8; i++) {
+            if (this.enemyProjectiles.length >= POOL_CAPS.ENEMY_PROJ) break;
+            const a = (i / 8) * Math.PI * 2 + boss.facingAngle + rotOffset;
+            this.enemyProjectiles.push({
+              x: boss.pos.x + Math.cos(a) * 24,
+              y: boss.pos.y + Math.sin(a) * 24,
+              dx: Math.cos(a) * spd,
+              dy: Math.sin(a) * spd,
+              angle: a,
+              remainingLife: 2.2,
+              damage: 15
+            });
+          }
+        }
+        boss.state = 'chasing';
+        boss.attackTimer = 1.95;
+      }
+    } else if (boss.state === 'b1_lava_wall') {
+      boss.facingAngle = angleToPlayer;
+      boss.stateTimer -= dt;
+      if (boss.subStep === 0 && boss.stateTimer <= 0.35) {
+        boss.subStep = 1;
+        // Muro ancho de 9 rocas de lava con un hueco de 2 posiciones para esquivar
+        const count = 9;
+        const arc = 1.55;
+        const gapCenter = 2 + Math.floor(Math.random() * 5);
+        for (let i = 0; i < count; i++) {
+          if (Math.abs(i - gapCenter) <= 0) continue;
+          if (this.enemyProjectiles.length >= POOL_CAPS.ENEMY_PROJ) break;
+          const a = angleToPlayer - arc * 0.5 + (i / (count - 1)) * arc;
+          this.enemyProjectiles.push({
+            x: boss.pos.x + Math.cos(a) * 26,
+            y: boss.pos.y + Math.sin(a) * 26,
+            dx: Math.cos(a) * 235,
+            dy: Math.sin(a) * 235,
+            angle: a,
+            remainingLife: 2.3,
+            damage: 14
+          });
+        }
+      }
+      if (boss.stateTimer <= 0) {
+        // Segunda minifila central de 3 brasas
+        for (let i = -1; i <= 1; i++) {
+          if (this.enemyProjectiles.length >= POOL_CAPS.ENEMY_PROJ) break;
+          const a = angleToPlayer + i * 0.24;
+          this.enemyProjectiles.push({
+            x: boss.pos.x + Math.cos(a) * 26,
+            y: boss.pos.y + Math.sin(a) * 26,
+            dx: Math.cos(a) * 260,
+            dy: Math.sin(a) * 260,
+            angle: a,
+            remainingLife: 2.1,
+            damage: 14
+          });
+        }
+        boss.state = 'chasing';
+        boss.attackTimer = 1.85;
+      }
+    } else if (boss.state === 'b1_geysers') {
+      boss.facingAngle = angleToPlayer;
+      boss.stateTimer -= dt;
+      if (boss.stateTimer <= 0) {
+        boss.state = 'chasing';
+        boss.attackTimer = 1.85;
+      }
+    }
+    // --- ATAQUES BOSS 2 (SERAFÍN CORRUPTO) ---
+    else if (boss.state === 'b2_spiral') {
+      boss.stateTimer -= dt;
+      boss.subTimer -= dt;
+      if (boss.subTimer <= 0) {
+        boss.subTimer = 0.11;
+        boss.spiralAngle += 0.36;
+        // Galaxia molinete de 4 brazos simétricos
+        for (let arm = 0; arm < 4; arm++) {
+          if (this.enemyProjectiles.length >= POOL_CAPS.ENEMY_PROJ) break;
+          const a = boss.spiralAngle + arm * (Math.PI * 0.5);
+          this.enemyProjectiles.push({
+            x: boss.pos.x + Math.cos(a) * 22,
+            y: boss.pos.y + Math.sin(a) * 22,
+            dx: Math.cos(a) * 245,
+            dy: Math.sin(a) * 245,
+            angle: a,
+            remainingLife: 2.2,
+            damage: 14
+          });
+        }
+      }
+      if (boss.stateTimer <= 0) {
+        boss.state = 'chasing';
+        boss.attackTimer = 1.85;
+      }
+    } else if (boss.state === 'b2_pendulum') {
+      boss.facingAngle = angleToPlayer;
+      boss.stateTimer -= dt;
+      boss.subTimer -= dt;
+      if (boss.subTimer <= 0 && boss.subStep < 3) {
+        boss.subTimer = 0.25;
+        const shift = (boss.subStep - 1) * 0.14;
+        const count = 6;
+        const arc = 0.96;
+        this.#spawnShockRing(boss.pos.x, boss.pos.y, RELICARIO_PALETTE.coldSilver, 54);
+        for (let i = 0; i < count; i++) {
+          if (this.enemyProjectiles.length >= POOL_CAPS.ENEMY_PROJ) break;
+          const a = angleToPlayer + shift - arc * 0.5 + (i / (count - 1)) * arc;
+          this.enemyProjectiles.push({
+            x: boss.pos.x + Math.cos(a) * 24,
+            y: boss.pos.y + Math.sin(a) * 24,
+            dx: Math.cos(a) * 265,
+            dy: Math.sin(a) * 265,
+            angle: a,
+            remainingLife: 2.1,
+            damage: 14
+          });
+        }
+        boss.subStep += 1;
+      }
+      if (boss.stateTimer <= 0) {
+        boss.state = 'chasing';
+        boss.attackTimer = 1.8;
+      }
+    } else if (boss.state === 'b2_dash_prep') {
+      if (boss.stateTimer > 0.14) boss.facingAngle = angleToPlayer;
+      boss.stateTimer -= dt;
+      if (boss.stateTimer <= 0) {
+        // Deja un sello de luz de jade explosivo donde despega
+        this.bossZones.push({
+          x: boss.pos.x,
+          y: boss.pos.y,
+          radius: 38,
+          remaining: 0.78,
+          maxTime: 0.78,
+          angleOffset: boss.facingAngle,
+          shards: 6,
+          color: RELICARIO_PALETTE.graceJade
+        });
+        boss.dashVel.dx = Math.cos(boss.facingAngle) * 445;
+        boss.dashVel.dy = Math.sin(boss.facingAngle) * 445;
+        boss.state = 'b2_dashing';
+        boss.stateTimer = 0.34;
+      }
+    } else if (boss.state === 'b2_dashing') {
+      boss.pos.x += boss.dashVel.dx * dt;
+      boss.pos.y += boss.dashVel.dy * dt;
+      this.#spawnGhostTrail(boss.pos.x, boss.pos.y, boss.facingAngle);
+      boss.stateTimer -= dt;
+      if (boss.stateTimer <= 0) {
+        if (boss.subStep === 0) {
+          boss.subStep = 1;
+          boss.state = 'b2_dash_prep';
+          boss.stateTimer = 0.30;
+          boss.facingAngle = angleToPlayer;
+        } else {
+          boss.state = 'chasing';
+          boss.attackTimer = 1.85;
+        }
+      }
+    }
+    // --- ATAQUES BOSS 3 (INQUISIDOR ABISAL) ---
+    else if (boss.state === 'b3_sword_clock') {
+      boss.facingAngle = angleToPlayer;
+      boss.stateTimer -= dt;
+      boss.subTimer -= dt;
+      // Invoca 8 espadas orbitales en círculo que disparan una tras otra hacia el jugador
+      if (boss.subTimer <= 0 && boss.subStep < 8) {
+        boss.subTimer = 0.10;
+        const orbitAngle = (boss.subStep / 8) * Math.PI * 2;
+        const sx = boss.pos.x + Math.cos(orbitAngle) * 34;
+        const sy = boss.pos.y + Math.sin(orbitAngle) * 34;
+        const aim = Math.atan2(this.playerPos.y - sy, this.playerPos.x - sx);
+        this.#spawnBurst(sx, sy, '#A855F7', 5, 80);
+        if (this.enemyProjectiles.length < POOL_CAPS.ENEMY_PROJ) {
+          this.enemyProjectiles.push({
+            x: sx,
+            y: sy,
+            dx: Math.cos(aim) * 295,
+            dy: Math.sin(aim) * 295,
+            angle: aim,
+            remainingLife: 2.2,
+            damage: 15
+          });
+        }
+        boss.subStep += 1;
+      }
+      if (boss.stateTimer <= 0) {
+        boss.state = 'chasing';
+        boss.attackTimer = 1.85;
+      }
+    } else if (boss.state === 'b3_cross_waves') {
+      boss.stateTimer -= dt;
+      if (boss.subStep === 0 && boss.stateTimer <= 0.42) {
+        boss.subStep = 1;
+        this.#spawnShockRing(boss.pos.x, boss.pos.y, '#A855F7', 74);
+        for (let i = 0; i < 10; i++) {
+          if (this.enemyProjectiles.length >= POOL_CAPS.ENEMY_PROJ) break;
+          const a = (i / 10) * Math.PI * 2;
+          this.enemyProjectiles.push({
+            x: boss.pos.x + Math.cos(a) * 24,
+            y: boss.pos.y + Math.sin(a) * 24,
+            dx: Math.cos(a) * 255,
+            dy: Math.sin(a) * 255,
+            angle: a,
+            remainingLife: 2.1,
+            damage: 15
+          });
+        }
+      }
+      if (boss.stateTimer <= 0) {
+        this.#spawnShockRing(boss.pos.x, boss.pos.y, RELICARIO_PALETTE.vermilion, 80);
+        for (let i = 0; i < 10; i++) {
+          if (this.enemyProjectiles.length >= POOL_CAPS.ENEMY_PROJ) break;
+          const a = (i / 10) * Math.PI * 2 + Math.PI / 10;
+          this.enemyProjectiles.push({
+            x: boss.pos.x + Math.cos(a) * 24,
+            y: boss.pos.y + Math.sin(a) * 24,
+            dx: Math.cos(a) * 255,
+            dy: Math.sin(a) * 255,
+            angle: a,
+            remainingLife: 2.1,
+            damage: 15
+          });
+        }
+        boss.state = 'chasing';
+        boss.attackTimer = 1.85;
+      }
+    } else if (boss.state === 'b3_whirlwind') {
+      boss.facingAngle = angleToPlayer;
+      const rushSpeed = boss.baseSpeed * 1.68;
+      boss.pos.x += dirX * rushSpeed * dt;
+      boss.pos.y += dirY * rushSpeed * dt;
+      boss.stateTimer -= dt;
+      boss.subTimer -= dt;
+      if (boss.subTimer <= 0) {
+        boss.subTimer = 0.18;
+        const a = boss.age * 7.8;
+        for (const offset of [0, (Math.PI * 2) / 3, (Math.PI * 4) / 3]) {
+          if (this.enemyProjectiles.length >= POOL_CAPS.ENEMY_PROJ) break;
+          const ang = a + offset;
+          this.enemyProjectiles.push({
+            x: boss.pos.x + Math.cos(ang) * 24,
+            y: boss.pos.y + Math.sin(ang) * 24,
+            dx: Math.cos(ang) * 235,
+            dy: Math.sin(ang) * 235,
+            angle: ang,
+            remainingLife: 1.9,
+            damage: 14
+          });
+        }
+      }
+      if (boss.stateTimer <= 0) {
+        boss.state = 'chasing';
+        boss.attackTimer = 1.85;
+      }
+    }
+    // --- ATAQUES BOSS 4: JEFE FINAL (EL RELICARIO ETERNO) ---
+    else if (boss.state === 'b4_judgment') {
+      boss.facingAngle = angleToPlayer;
+      boss.stateTimer -= dt;
+      boss.subTimer -= dt;
+      // Galaxia de 6 brazos que invierte su sentido de giro a mitad del ataque
+      if (boss.subTimer <= 0) {
+        boss.subTimer = 0.13;
+        const dirSign = boss.stateTimer > 0.65 ? 1 : -1;
+        boss.spiralAngle += 0.28 * dirSign;
+        const arms = 6;
+        for (let i = 0; i < arms; i++) {
+          if (this.enemyProjectiles.length >= POOL_CAPS.ENEMY_PROJ) break;
+          const a = boss.spiralAngle + (i / arms) * Math.PI * 2;
+          this.enemyProjectiles.push({
+            x: boss.pos.x + Math.cos(a) * 28,
+            y: boss.pos.y + Math.sin(a) * 28,
+            dx: Math.cos(a) * 235,
+            dy: Math.sin(a) * 235,
+            angle: a,
+            remainingLife: 2.3,
+            damage: 16
+          });
+        }
+      }
+      if (boss.stateTimer <= 0) {
+        boss.state = 'chasing';
+        boss.attackTimer = boss.enraged ? 1.35 : 1.75;
+      }
+    } else if (boss.state === 'b4_pillars') {
+      boss.facingAngle = angleToPlayer;
+      boss.stateTimer -= dt;
+      if (boss.stateTimer <= 0) {
+        boss.state = 'chasing';
+        boss.attackTimer = boss.enraged ? 1.4 : 1.8;
+      }
+    } else if (boss.state === 'b4_cross_laser') {
+      // Cruz Catedralicia rotatoria de 4 haces + lanzas dirigidas
+      boss.facingAngle = angleToPlayer;
+      boss.stateTimer -= dt;
+      boss.subTimer -= dt;
+      if (boss.subTimer <= 0) {
+        boss.subTimer = 0.12;
+        boss.spiralAngle += 0.22;
+        for (let c = 0; c < 4; c++) {
+          if (this.enemyProjectiles.length >= POOL_CAPS.ENEMY_PROJ) break;
+          const a = boss.spiralAngle + c * (Math.PI * 0.5);
+          this.enemyProjectiles.push({
+            x: boss.pos.x + Math.cos(a) * 26,
+            y: boss.pos.y + Math.sin(a) * 26,
+            dx: Math.cos(a) * 265,
+            dy: Math.sin(a) * 265,
+            angle: a,
+            remainingLife: 2.1,
+            damage: 15
+          });
+        }
+      }
+      if (boss.stateTimer <= 0) {
+        for (let i = -1; i <= 1; i++) {
+          if (this.enemyProjectiles.length >= POOL_CAPS.ENEMY_PROJ) break;
+          const a = angleToPlayer + i * 0.22;
+          this.enemyProjectiles.push({
+            x: boss.pos.x + Math.cos(a) * 28,
+            y: boss.pos.y + Math.sin(a) * 28,
+            dx: Math.cos(a) * 295,
+            dy: Math.sin(a) * 295,
+            angle: a,
+            remainingLife: 2.2,
+            damage: 16
+          });
+        }
+        boss.state = 'chasing';
+        boss.attackTimer = boss.enraged ? 1.35 : 1.75;
+      }
+    } else if (boss.state === 'b4_apocalypse_prep') {
+      if (boss.stateTimer > 0.18) boss.facingAngle = angleToPlayer;
+      boss.stateTimer -= dt;
+      if (boss.stateTimer <= 0) {
+        const dashSpeed = boss.enraged ? 465 : 420;
+        boss.dashVel.dx = Math.cos(boss.facingAngle) * dashSpeed;
+        boss.dashVel.dy = Math.sin(boss.facingAngle) * dashSpeed;
+        boss.state = 'b4_apocalypse_rush';
+        boss.stateTimer = 0.44;
+        boss.subTimer = 0;
+      }
+    } else if (boss.state === 'b4_apocalypse_rush') {
+      boss.pos.x += boss.dashVel.dx * dt;
+      boss.pos.y += boss.dashVel.dy * dt;
+      boss.stateTimer -= dt;
+      boss.subTimer -= dt;
+      // Lanza proyectiles laterales perpendiculares mientras embiste
+      if (boss.subTimer <= 0) {
+        boss.subTimer = 0.13;
+        for (const side of [-Math.PI * 0.5, Math.PI * 0.5]) {
+          if (this.enemyProjectiles.length >= POOL_CAPS.ENEMY_PROJ) break;
+          const a = boss.facingAngle + side;
+          this.enemyProjectiles.push({
+            x: boss.pos.x + Math.cos(a) * 22,
+            y: boss.pos.y + Math.sin(a) * 22,
+            dx: Math.cos(a) * 235,
+            dy: Math.sin(a) * 235,
+            angle: a,
+            remainingLife: 1.9,
+            damage: 15
+          });
+        }
+      }
+      if (boss.stateTimer <= 0) {
+        this.#spawnShockRing(boss.pos.x, boss.pos.y, RELICARIO_PALETTE.vermilion, 98);
+        this.#triggerShake(6.5);
+        boss.state = 'chasing';
+        boss.attackTimer = boss.enraged ? 1.35 : 1.75;
+      }
+    }
+
+    boss.pos.x = Math.min(Math.max(boss.pos.x, ARENA_BOUNDS.minX + 30), ARENA_BOUNDS.maxX - 30);
+    boss.pos.y = Math.min(Math.max(boss.pos.y, ARENA_BOUNDS.minY + 30), ARENA_BOUNDS.maxY - 30);
+
+    // Colisión por contacto del Boss con el jugador
+    const pdx = this.playerPos.x - boss.pos.x;
+    const pdy = this.playerPos.y - boss.pos.y;
+    const hitDist = boss.hitRadius + 13;
+    if (pdx * pdx + pdy * pdy <= hitDist * hitDist && this.invulnerabilityTimer <= 0 && !this.hasEnded) {
+      this.#applyDamageToPlayer(boss.contactDamage);
+    }
+
+    // Animar el modelo 3D específico de cada Boss
+    if (this.bossVisual) {
+      const v = this.bossVisual;
+      v.root.visible = true;
+      v.root.position.set(boss.pos.x, 0, -boss.pos.y);
+      v.body.rotation.y = boss.facingAngle + Math.PI * 0.5;
+      v.body.position.y = Math.sin(boss.age * 4.0) * 2.2;
+
+      const matInfo = v.mats[boss.bossNumber];
+      if (matInfo) {
+        matInfo.mat.emissive.set(boss.flashTimer > 0 ? '#FFFFFF' : matInfo.baseHex);
+        matInfo.mat.emissiveIntensity = boss.flashTimer > 0 ? 1.45 : 0.78;
+      }
+
+      if (boss.bossNumber === 1) {
+        v.parts.b1Hammers.rotation.y = boss.age * (boss.state === 'b1_quake_leap' ? 9.5 : 3.2);
+        v.parts.b1Furnace.rotation.y = boss.age * 4.0;
+        if (v.parts.b1ArmsGroup) {
+          v.parts.b1ArmsGroup.rotation.x =
+            boss.state === 'b1_quake_prep'
+              ? -0.95
+              : boss.state === 'b1_quake_leap'
+                ? 0.72
+                : Math.sin(boss.age * 5.2) * 0.22;
+        }
+      } else if (boss.bossNumber === 2) {
+        const flap = Math.sin(boss.age * 9.5) * 0.44;
+        v.parts.b2LeftWings.rotation.y = flap;
+        v.parts.b2RightWings.rotation.y = -flap;
+        v.parts.b2Ring1.rotation.x = boss.age * 2.6;
+        v.parts.b2Ring1.rotation.y = boss.age * 1.8;
+        v.parts.b2Ring2.rotation.z = -boss.age * 3.1;
+        v.parts.b2Ring2.rotation.x = 0.6;
+        if (v.parts.b2SunHalo) {
+          v.parts.b2SunHalo.rotation.z = boss.age * 1.9;
+        }
+      } else if (boss.bossNumber === 3) {
+        const spinRate = boss.state === 'b3_whirlwind' ? 12.5 : 4.2;
+        v.parts.b3Scythes.rotation.y = boss.age * spinRate;
+        if (v.parts.b3SwordsFan) {
+          v.parts.b3SwordsFan.rotation.z = Math.sin(boss.age * 4.0) * 0.18;
+          v.parts.b3SwordsFan.position.y = Math.sin(boss.age * 6.0) * 1.8;
+        }
+      } else if (boss.bossNumber === 4) {
+        const rate = boss.enraged ? 2.1 : 1.0;
+        v.parts.b4Heart.rotation.y = boss.age * 2.5 * rate;
+        v.parts.b4Gyro1.rotation.x = boss.age * 1.9 * rate;
+        v.parts.b4Gyro1.rotation.y = boss.age * 1.3 * rate;
+        v.parts.b4Gyro2.rotation.z = -boss.age * 2.4 * rate;
+        v.parts.b4Gyro2.rotation.x = 0.55;
+        v.parts.b4Gyro3.rotation.y = boss.age * 3.2 * rate;
+        v.parts.b4Gyro3.rotation.z = 0.75;
+        v.parts.b4Pillars.rotation.y = -boss.age * 1.6 * rate;
+        if (v.parts.b4CrownSpears) {
+          v.parts.b4CrownSpears.rotation.y = boss.age * 2.4 * rate;
+          v.parts.b4CrownSpears.position.y = Math.sin(boss.age * 5.0) * 2.0;
+        }
+      }
+
+      const baseAura = boss.isFinal ? 52 : 40;
+      v.auraRing.scale.setScalar(baseAura + Math.sin(boss.age * 6.0) * 4);
+      if (v.innerAuraRing) {
+        v.innerAuraRing.scale.setScalar(baseAura * 0.68 - Math.sin(boss.age * 6.0) * 2.5);
+        v.innerAuraRing.rotation.z = -boss.age * 2.2;
+      }
+    }
+  }
+
+  #applyHitToBoss(damage, velDx, velDy, impactX, impactY) {
+    const boss = this.activeBoss;
+    if (!boss) return;
+
+    boss.hp = Math.max(0, boss.hp - damage);
+    boss.flashTimer = 0.07;
+    this.#spawnBurst(impactX, impactY, boss.color, 6, 95);
+
+    const velMag = Math.max(1, Math.hypot(velDx, velDy));
+    const knock = (boss.isFinal ? 0.25 : 0.55) * (1.0 + this.upgradeStats.knockBonus);
+    boss.pos.x += (velDx / velMag) * knock;
+    boss.pos.y += (velDy / velMag) * knock;
+
+    if (boss.hp <= 0) {
+      this.#defeatBoss();
+    }
+  }
+
+  #defeatBoss() {
+    const boss = this.activeBoss;
+    if (!boss) return;
+
+    const bx = boss.pos.x;
+    const by = boss.pos.y;
+    const xpReward = boss.xpReward;
+    const title = boss.title;
+    const wasFinalBoss = boss.isFinal;
+
+    this.activeBoss = null;
+    this.bossZones.length = 0;
+    if (this.bossVisual) {
+      this.bossVisual.root.visible = false;
+    }
+
+    this.enemyProjectiles.length = 0;
+
+    // Gran explosión de derrota del Boss
+    this.#spawnShockRing(bx, by, RELICARIO_PALETTE.liturgicalGold, 130);
+    this.#spawnShockRing(bx, by, RELICARIO_PALETTE.vermilion, 95);
+    this.#spawnBurst(bx, by, RELICARIO_PALETTE.liturgicalGold, 36, 180);
+    this.#triggerShake(9.5);
+
+    this.#registerKill();
+
+    // Si era el Jefe Final de 1:59, ¡victoria inmediata de la partida!
+    if (wasFinalBoss) {
+      this.elapsedTime = TOTAL_RUN_DURATION;
+      this.phaseStats.director2026.survivedSeconds = 40.0;
+      this.phaseStats.director2026.didSurvive = true;
+      this.#finishRun(true);
+      return;
+    }
+
+    this.#spawnPopupText(`★ ¡${title} DERROTADO! ★`, bx, by + 38, RELICARIO_PALETTE.liturgicalGold);
+
+    // Botiquín garantizado en la posición donde cayó el Boss
+    this.medkits.push({ pos: { x: bx, y: by }, age: 0 });
+
+    this.#grantXP(xpReward);
+    this.#publishHUDNow(null);
+  }
+
   #applyHitToEnemy(index, damage, velDx, velDy, impactX, impactY) {
     const enemy = this.enemies[index];
     enemy.hp -= damage;
 
-    const sparkColor = enemy.archetype === 'jaula' ? RELICARIO_PALETTE.oldBone : RELICARIO_PALETTE.vermilion;
+    const sparkColor =
+      enemy.archetype === 'jaula' || enemy.archetype === 'coloso_menor'
+        ? RELICARIO_PALETTE.oldBone
+        : enemy.archetype === 'tejedor'
+          ? RELICARIO_PALETTE.coldSilver
+          : enemy.archetype === 'sombra'
+            ? '#A855F7'
+            : RELICARIO_PALETTE.vermilion;
     this.#spawnBurst(impactX, impactY, sparkColor, 5, 85);
 
     const velMag = Math.max(1, Math.hypot(velDx, velDy));
-    const knock = enemy.archetype === 'desollado' ? 5.5 : enemy.archetype === 'jaula' ? 1.2 : 4.0;
+    const knockBoost = 1.0 + this.upgradeStats.knockBonus;
+    const baseKnock =
+      enemy.archetype === 'desollado'
+        ? 4.8
+        : enemy.archetype === 'jaula' || enemy.archetype === 'coloso_menor'
+          ? 1.0
+          : 3.5;
+    const knock = baseKnock * knockBoost;
     enemy.pos.x += (velDx / velMag) * knock;
     enemy.pos.y += (velDy / velMag) * knock;
     enemy.flashTimer = 0.08;
@@ -1172,43 +2738,189 @@ export class PanicArena3D {
     }
 
     if (enemy.hp <= 0) {
+      const deadX = enemy.pos.x;
+      const deadY = enemy.pos.y;
+      const deadArch = enemy.archetype;
       let deathColor = RELICARIO_PALETTE.vermilion;
       let count = 11;
       let xpValue = 10;
-      if (enemy.archetype === 'jaula') {
+      if (deadArch === 'jaula') {
         deathColor = RELICARIO_PALETTE.liturgicalGold;
         count = 20;
         xpValue = 65;
         this.#triggerShake(4.5);
-      } else if (enemy.archetype === 'martir') {
+      } else if (deadArch === 'martir') {
         deathColor = RELICARIO_PALETTE.liturgicalGold;
         count = 15;
         xpValue = 28;
+      } else if (deadArch === 'incensario') {
+        deathColor = RELICARIO_PALETTE.emberOrange;
+        count = 18;
+        xpValue = 22;
+      } else if (deadArch === 'tejedor') {
+        deathColor = '#38BDF8';
+        count = 15;
+        xpValue = 30;
+      } else if (deadArch === 'coloso_menor') {
+        deathColor = RELICARIO_PALETTE.graceJade;
+        count = 18;
+        xpValue = 38;
+      } else if (deadArch === 'sombra') {
+        deathColor = '#A855F7';
+        count = 15;
+        xpValue = 32;
       }
 
-      this.#spawnBurst(enemy.pos.x, enemy.pos.y, deathColor, count, 130);
+      this.#spawnBurst(deadX, deadY, deathColor, count, 130);
       // Swap-and-pop O(1)
       const lastIdx = this.enemies.length - 1;
       if (index !== lastIdx) {
         this.enemies[index] = this.enemies[lastIdx];
       }
       this.enemies.pop();
-      this.kills += 1;
-      const activePhase = CAMPAIGN_PHASES[this.currentPhaseIndex] || CAMPAIGN_PHASES[0];
-      if (this.phaseStats[activePhase.id]) {
-        this.phaseStats[activePhase.id].kills += 1;
+      this.#registerKill();
+
+      // Mecánica única de Incensario: explota en área al morir dañando a enemigos cercanos y al jugador si está pegado
+      if (deadArch === 'incensario') {
+        this.#detonateIncensario(deadX, deadY);
       }
+
+      // Mecánica única de Coloso Menor: al morir se divide en 2 mini-Desollados rápidos
+      if (deadArch === 'coloso_menor') {
+        this.#splitColosoMenor(deadX, deadY);
+      }
+
+      // Mejora Nova Explosiva según su grado acumulado
+      if (this.upgradeStats.novaDmg > 0) {
+        this.#triggerDeathNova(deadX, deadY);
+      }
+
       this.#grantXP(xpValue);
     }
   }
 
+  #detonateIncensario(cx, cy) {
+    const blastRad = 52;
+    const blastRadSq = blastRad * blastRad;
+    this.#spawnShockRing(cx, cy, RELICARIO_PALETTE.emberOrange, blastRad);
+    this.#spawnBurst(cx, cy, RELICARIO_PALETTE.liturgicalGold, 14, 135);
+    this.#triggerShake(4.0);
+
+    // Daña al jugador solo si está dentro del radio corto de la explosión
+    const pdx = this.playerPos.x - cx;
+    const pdy = this.playerPos.y - cy;
+    if (pdx * pdx + pdy * pdy <= blastRadSq && this.invulnerabilityTimer <= 0 && !this.hasEnded) {
+      this.#applyDamageToPlayer(15);
+    }
+
+    // Daña también a otros enemigos cercanos (reacción en cadena divertida para el jugador)
+    for (let i = this.enemies.length - 1; i >= 0; i--) {
+      const e = this.enemies[i];
+      const dx = e.pos.x - cx;
+      const dy = e.pos.y - cy;
+      if (dx * dx + dy * dy <= blastRadSq) {
+        e.hp -= 3.5;
+        e.flashTimer = 0.09;
+      }
+    }
+  }
+
+  #splitColosoMenor(cx, cy) {
+    this.#spawnShockRing(cx, cy, RELICARIO_PALETTE.graceJade, 44);
+    for (const offsetSign of [-1, 1]) {
+      if (this.enemies.length >= POOL_CAPS.DESOLLADO + POOL_CAPS.JAULA + POOL_CAPS.MARTIR) break;
+      const ang = randomRange(0, Math.PI * 2);
+      const sx = Math.min(Math.max(cx + Math.cos(ang) * 14 * offsetSign, ARENA_BOUNDS.minX), ARENA_BOUNDS.maxX);
+      const sy = Math.min(Math.max(cy + Math.sin(ang) * 14 * offsetSign, ARENA_BOUNDS.minY), ARENA_BOUNDS.maxY);
+      this.enemies.push({
+        archetype: 'desollado',
+        renderScale: 0.66,
+        pos: { x: sx, y: sy },
+        hp: 1.5,
+        maxHP: 1.5,
+        baseSpeed: 142,
+        hitRadius: 9.5,
+        contactDamage: 10,
+        age: 0,
+        phaseOffset: randomRange(0, Math.PI * 2),
+        abilityCooldown: 1.6,
+        abilityActiveTimer: 0,
+        isSpitTelegraphing: false,
+        comboDashUsed: false,
+        stalkerPhase: { type: 'stalking', cooldown: 1.6 },
+        facingAngle: Math.atan2(this.playerPos.y - sy, this.playerPos.x - sx),
+        flashTimer: 0.1,
+        isPouncing: false,
+        attachedRibs: 0,
+        ribSpinAngle: 0,
+        ribSpinSpeed: 1.0,
+        isFrenzied: false,
+        spitPulse: 0,
+        telegraphActive: false,
+        telegraphDist: 0,
+        haloSpin: 0
+      });
+    }
+  }
+
+  #registerKill() {
+    this.kills += 1;
+    const activePhase = CAMPAIGN_PHASES[this.currentPhaseIndex] || CAMPAIGN_PHASES[0];
+    if (this.phaseStats[activePhase.id]) {
+      this.phaseStats[activePhase.id].kills += 1;
+    }
+    const lsEvery = this.upgradeStats.lifeStealEveryKills;
+    if (lsEvery > 0 && this.kills % lsEvery === 0 && this.playerHP < this.playerMaxHP) {
+      const heal = this.upgradeStats.lifeStealAmount || 2;
+      this.playerHP = Math.min(this.playerMaxHP, this.playerHP + heal);
+      this.#spawnPopupText(`+${heal} HP`, this.playerPos.x, this.playerPos.y + 30, RELICARIO_PALETTE.graceJade);
+    }
+  }
+
+  #triggerDeathNova(cx, cy) {
+    if (this.upgradeStats.novaDmg <= 0) return;
+    const radius = Math.min(165, 48 + this.upgradeStats.novaRadius);
+    const radiusSq = radius * radius;
+    const aoeDmg = this.upgradeStats.novaDmg;
+    const bestNovaRarity = this.upgradeBestRarity.nova
+      ? UPGRADE_RARITY_MAP[this.upgradeBestRarity.nova]
+      : null;
+    const ringColor = bestNovaRarity ? bestNovaRarity.color : RELICARIO_PALETTE.liturgicalGold;
+    this.#spawnShockRing(cx, cy, ringColor, radius * 0.88);
+
+    for (let i = this.enemies.length - 1; i >= 0; i--) {
+      const e = this.enemies[i];
+      const dx = e.pos.x - cx;
+      const dy = e.pos.y - cy;
+      const dSq = dx * dx + dy * dy;
+      if (dSq <= radiusSq) {
+        e.hp -= aoeDmg;
+        e.flashTimer = 0.08;
+        const d = Math.max(1, Math.sqrt(dSq));
+        e.pos.x += (dx / d) * 10;
+        e.pos.y += (dy / d) * 10;
+        if (e.hp <= 0) {
+          this.#spawnBurst(e.pos.x, e.pos.y, RELICARIO_PALETTE.emberOrange, 8, 110);
+          const lastIdx = this.enemies.length - 1;
+          if (i !== lastIdx) {
+            this.enemies[i] = this.enemies[lastIdx];
+          }
+          this.enemies.pop();
+          this.#registerKill();
+        }
+      }
+    }
+  }
+
   #grantXP(amount) {
-    this.currentXP += amount;
+    const effectiveXP = amount * (this.upgradeStats.xpMultiplier || 1.0);
+    this.currentXP += effectiveXP;
     let didLevelUp = false;
     while (this.currentXP >= this.xpToNextLevel) {
       this.currentXP -= this.xpToNextLevel;
       this.playerLevel += 1;
       this.xpToNextLevel = xpRequiredForLevel(this.playerLevel);
+      this.pendingLevelUps += 1;
       didLevelUp = true;
     }
 
@@ -1216,19 +2928,179 @@ export class PanicArena3D {
     this.playerXPBar.updateXP(progress, this.playerLevel, didLevelUp);
 
     if (didLevelUp) {
-      if (this.playerHP < PLAYER_MAX_HP) {
-        const prevHP = this.playerHP;
-        this.playerHP = Math.min(PLAYER_MAX_HP, this.playerHP + 10);
-        const healed = this.playerHP - prevHP;
-        if (healed > 0) {
-          this.#spawnShockRing(this.playerPos.x, this.playerPos.y, RELICARIO_PALETTE.graceJade, 34);
-          this.#spawnPopupText(`+${healed} HP`, this.playerPos.x, this.playerPos.y - 26, RELICARIO_PALETTE.graceJade);
-        }
+      if (this.playerHP < this.playerMaxHP) {
+        this.playerHP = Math.min(this.playerMaxHP, this.playerHP + 12);
       }
-      this.#spawnShockRing(this.playerPos.x, this.playerPos.y, RELICARIO_PALETTE.liturgicalGold, 44);
+      this.#spawnShockRing(this.playerPos.x, this.playerPos.y, RELICARIO_PALETTE.liturgicalGold, 48);
       this.#spawnBurst(this.playerPos.x, this.playerPos.y, RELICARIO_PALETTE.liturgicalGold, 14, 135);
-      this.#spawnPopupText(`¡NIVEL ${this.playerLevel}! +PODER`, this.playerPos.x, this.playerPos.y + 36, RELICARIO_PALETTE.liturgicalGold);
       this.audio?.triggerLevelUp();
+      if (!this.activeUpgradeDraft) {
+        this.#openNextUpgradeDraft();
+      } else {
+        this.#publishHUDNow(null);
+      }
+    }
+  }
+
+  #rollUpgradeRarity() {
+    // A medida que avanza la partida y el nivel, sube ligeramente la probabilidad de grados altos
+    const progress = Math.min(1, this.elapsedTime / TOTAL_RUN_DURATION);
+    const lvlFactor = Math.min(1, Math.max(0, (this.playerLevel - 2) / 7));
+    const luck = Math.min(1, progress * 0.55 + lvlFactor * 0.45);
+
+    const weights = UPGRADE_RARITIES.map((r) => {
+      if (r.id === 'common') return Math.max(18, r.baseWeight - luck * 22);
+      if (r.id === 'uncommon') return r.baseWeight + luck * 3;
+      if (r.id === 'rare') return r.baseWeight + luck * 9;
+      if (r.id === 'epic') return r.baseWeight + luck * 6.5;
+      if (r.id === 'legendary') return r.baseWeight + luck * 4.5;
+      return r.baseWeight;
+    });
+
+    const totalW = weights.reduce((a, b) => a + b, 0);
+    let roll = Math.random() * totalW;
+    for (let i = 0; i < UPGRADE_RARITIES.length; i++) {
+      roll -= weights[i];
+      if (roll <= 0) return UPGRADE_RARITIES[i];
+    }
+    return UPGRADE_RARITIES[0];
+  }
+
+  #openNextUpgradeDraft() {
+    if (this.hasEnded || this.pendingLevelUps <= 0) return;
+
+    const available = LEVEL_UPGRADES.filter((u) => (this.upgradeRanks[u.id] || 0) < u.maxRank);
+    if (available.length === 0) {
+      this.pendingLevelUps = 0;
+      this.activeUpgradeDraft = null;
+      this.onUpgradeDraftChange?.(null);
+      return;
+    }
+
+    const pool = [...available];
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const tmp = pool[i];
+      pool[i] = pool[j];
+      pool[j] = tmp;
+    }
+
+    if (this.playerHP / this.playerMaxHP <= 0.45) {
+      const vitIdx = pool.findIndex((u) => u.id === 'vitality');
+      if (vitIdx > 2) {
+        const [vit] = pool.splice(vitIdx, 1);
+        pool.unshift(vit);
+      }
+    }
+
+    const picked = pool.slice(0, 3).map((u) => {
+      const rarity = this.#rollUpgradeRarity();
+      const tierDef = u.tiers[rarity.id] || u.tiers.common;
+      return {
+        id: u.id,
+        title: u.title,
+        icon: u.icon,
+        rarityId: rarity.id,
+        rarityLabel: rarity.label,
+        rarityOrder: rarity.order,
+        color: rarity.color,
+        bgTint: rarity.bgTint,
+        borderTint: rarity.borderTint,
+        glowTint: rarity.glowTint,
+        shortTag: tierDef.shortTag,
+        description: tierDef.description,
+        tierData: tierDef,
+        currentRank: this.upgradeRanks[u.id] || 0,
+        nextRank: (this.upgradeRanks[u.id] || 0) + 1
+      };
+    });
+
+    this.playerVelocity.dx = 0;
+    this.playerVelocity.dy = 0;
+    this.keysDown.clear();
+    this.#releaseJoystick();
+    this.enemyProjectiles.length = 0;
+
+    this.activeUpgradeDraft = {
+      level: this.playerLevel,
+      options: picked
+    };
+
+    this.onUpgradeDraftChange?.(this.activeUpgradeDraft);
+    this.#publishHUDNow(null);
+  }
+
+  selectUpgrade(upgradeId) {
+    if (!this.activeUpgradeDraft) return;
+    const chosenOpt = this.activeUpgradeDraft.options.find((o) => o.id === upgradeId);
+    const def = LEVEL_UPGRADE_MAP[upgradeId];
+    if (!def || !chosenOpt) return;
+
+    const nextRank = Math.min(def.maxRank, (this.upgradeRanks[upgradeId] || 0) + 1);
+    this.upgradeRanks[upgradeId] = nextRank;
+
+    // Guardar la rareza más alta conseguida para colorear el icono en el HUD
+    const prevBestId = this.upgradeBestRarity[upgradeId];
+    const prevBestOrder = prevBestId ? (UPGRADE_RARITY_MAP[prevBestId]?.order || 0) : 0;
+    if (chosenOpt.rarityOrder > prevBestOrder) {
+      this.upgradeBestRarity[upgradeId] = chosenOpt.rarityId;
+    }
+
+    const t = chosenOpt.tierData;
+
+    // Aplicar mejoras numéricas según el grado (Común, Poco común, Raro, Épico, Legendario)
+    if (t.dmgBonus) this.upgradeStats.dmgBonus += t.dmgBonus;
+    if (t.knockBonus) this.upgradeStats.knockBonus += t.knockBonus;
+    if (t.rateBonus) this.upgradeStats.rateBonus += t.rateBonus;
+    if (t.projSpeedBonus) this.upgradeStats.projSpeedBonus += t.projSpeedBonus;
+    if (t.extraShots) this.upgradeStats.extraShots += t.extraShots;
+    if (t.pierceBonus) this.upgradeStats.pierceBonus += t.pierceBonus;
+    if (t.scaleBonus) this.upgradeStats.scaleBonus += t.scaleBonus;
+    if (t.speedBonus) this.upgradeStats.speedBonus += t.speedBonus;
+    if (t.iframeBonus) this.upgradeStats.iframeBonus += t.iframeBonus;
+    if (t.radiusBonus) this.upgradeStats.radiusBonus += t.radiusBonus;
+    if (t.medkitHealBonus) this.upgradeStats.medkitHealBonus += t.medkitHealBonus;
+    if (t.novaDmg) this.upgradeStats.novaDmg += t.novaDmg;
+    if (t.novaRadius) this.upgradeStats.novaRadius += t.novaRadius;
+
+    if (t.maxHpBonus) {
+      this.playerMaxHP += t.maxHpBonus;
+    }
+    if (t.healNow) {
+      this.playerHP = Math.min(this.playerMaxHP, this.playerHP + t.healNow);
+    }
+    if (upgradeId === 'nova') {
+      this.#triggerDeathNova(this.playerPos.x, this.playerPos.y);
+    }
+
+    // Empuje protector al reanudar tras elegir mejora
+    const px = this.playerPos.x;
+    const py = this.playerPos.y;
+    for (let i = 0; i < this.enemies.length; i++) {
+      const e = this.enemies[i];
+      const dx = e.pos.x - px;
+      const dy = e.pos.y - py;
+      const d = Math.hypot(dx, dy);
+      if (d < 105 && d > 0.001) {
+        const push = 105 - d;
+        e.pos.x = Math.min(Math.max(e.pos.x + (dx / d) * push, ARENA_BOUNDS.minX), ARENA_BOUNDS.maxX);
+        e.pos.y = Math.min(Math.max(e.pos.y + (dy / d) * push, ARENA_BOUNDS.minY), ARENA_BOUNDS.maxY);
+      }
+    }
+
+    this.invulnerabilityTimer = Math.max(this.invulnerabilityTimer, 1.35);
+    this.#spawnShockRing(px, py, chosenOpt.color, 54);
+    this.#spawnBurst(px, py, chosenOpt.color, 16, 140);
+    this.#spawnPopupText(`${chosenOpt.rarityLabel} · ${chosenOpt.shortTag}`, px, py + 34, chosenOpt.color);
+    this.audio?.triggerHeal?.();
+
+    this.pendingLevelUps = Math.max(0, this.pendingLevelUps - 1);
+    if (this.pendingLevelUps > 0) {
+      this.#openNextUpgradeDraft();
+    } else {
+      this.activeUpgradeDraft = null;
+      this.lastFrameTime = null;
+      this.onUpgradeDraftChange?.(null);
       this.#publishHUDNow(null);
     }
   }
@@ -1340,6 +3212,93 @@ export class PanicArena3D {
         }
         enemy.haloSpin += dt * 1.9;
         enemy.facingAngle = facingAngle;
+      } else if (enemy.archetype === 'incensario') {
+        // INCENSARIO VOLÁTIL: Corre hacia el jugador; al acercarse a <52 unidades entra en ignición de 0.55s y explota
+        if (enemy.isIgniting) {
+          enemy.abilityActiveTimer -= dt;
+          enemy.pos.x += dirX * enemy.baseSpeed * 0.45 * dt;
+          enemy.pos.y += dirY * enemy.baseSpeed * 0.45 * dt;
+          if (enemy.abilityActiveTimer <= 0) {
+            enemy.hp = 0;
+            this.#applyHitToEnemy(i, 999, 0, 0, enemy.pos.x, enemy.pos.y);
+            i -= 1;
+            continue;
+          }
+        } else {
+          const speed = enemy.baseSpeed * directive.enemySpeedMultiplier;
+          enemy.pos.x += dirX * speed * dt;
+          enemy.pos.y += dirY * speed * dt;
+          if (distToPlayer < 52) {
+            enemy.isIgniting = true;
+            enemy.abilityActiveTimer = 0.55;
+            this.#spawnShockRing(enemy.pos.x, enemy.pos.y, RELICARIO_PALETTE.emberOrange, 48);
+          }
+        }
+        enemy.facingAngle = angleToPlayer;
+      } else if (enemy.archetype === 'tejedor') {
+        // TEJEDOR ASTRAL: Mantiene distancia de francotirador (155-215), orbita lateralmente y dispara 2 saetas cruzadas
+        const tangentSign = enemy.phaseOffset > Math.PI ? 1.0 : -1.0;
+        const tanX = -dirY * tangentSign;
+        const tanY = dirX * tangentSign;
+        const radial = distToPlayer > 215 ? 0.75 : distToPlayer < 145 ? -0.65 : 0.0;
+        const speed = enemy.baseSpeed * directive.enemySpeedMultiplier;
+        enemy.pos.x += (dirX * radial + tanX * 0.82) * speed * dt;
+        enemy.pos.y += (dirY * radial + tanY * 0.82) * speed * dt;
+
+        enemy.abilityCooldown -= dt;
+        if (enemy.abilityCooldown <= 0 && distToPlayer < 360) {
+          enemy.abilityCooldown = randomRange(2.3, 3.2) * cooldownScale;
+          enemy.flashTimer = 0.12;
+          for (const spread of [-0.14, 0.14]) {
+            if (this.enemyProjectiles.length >= POOL_CAPS.ENEMY_PROJ) break;
+            const a = angleToPlayer + spread;
+            this.enemyProjectiles.push({
+              x: enemy.pos.x + Math.cos(a) * 18,
+              y: enemy.pos.y + Math.sin(a) * 18,
+              dx: Math.cos(a) * 235,
+              dy: Math.sin(a) * 235,
+              angle: a,
+              remainingLife: 2.2,
+              damage: 13
+            });
+          }
+        }
+        enemy.facingAngle = angleToPlayer;
+      } else if (enemy.archetype === 'coloso_menor') {
+        // COLOSO MENOR: Gólem acorazado implacable que al morir se divide en 2 mini-Desollados
+        const speed = enemy.baseSpeed * directive.enemySpeedMultiplier;
+        enemy.pos.x += dirX * speed * dt;
+        enemy.pos.y += dirY * speed * dt;
+        enemy.facingAngle = angleToPlayer;
+      } else if (enemy.archetype === 'sombra') {
+        // SOMBRA ABISAL: Acecha y cada ~2.8s se teletransporta en una nube violeta a otro ángulo del jugador y lanza 1 daga
+        const speed = enemy.baseSpeed * directive.enemySpeedMultiplier;
+        enemy.pos.x += dirX * speed * dt;
+        enemy.pos.y += dirY * speed * dt;
+        enemy.abilityCooldown -= dt;
+        if (enemy.abilityCooldown <= 0 && distToPlayer < 320) {
+          enemy.abilityCooldown = randomRange(2.5, 3.4) * cooldownScale;
+          this.#spawnBurst(enemy.pos.x, enemy.pos.y, '#A855F7', 10, 95);
+          this.#spawnGhostTrail(enemy.pos.x, enemy.pos.y, angleToPlayer);
+          const blinkAngle = randomRange(0, Math.PI * 2);
+          const blinkDist = randomRange(115, 155);
+          enemy.pos.x = Math.min(Math.max(this.playerPos.x + Math.cos(blinkAngle) * blinkDist, ARENA_BOUNDS.minX + 24), ARENA_BOUNDS.maxX - 24);
+          enemy.pos.y = Math.min(Math.max(this.playerPos.y + Math.sin(blinkAngle) * blinkDist, ARENA_BOUNDS.minY + 24), ARENA_BOUNDS.maxY - 24);
+          this.#spawnShockRing(enemy.pos.x, enemy.pos.y, '#A855F7', 34);
+          const aim = Math.atan2(this.playerPos.y - enemy.pos.y, this.playerPos.x - enemy.pos.x);
+          if (this.enemyProjectiles.length < POOL_CAPS.ENEMY_PROJ) {
+            this.enemyProjectiles.push({
+              x: enemy.pos.x + Math.cos(aim) * 16,
+              y: enemy.pos.y + Math.sin(aim) * 16,
+              dx: Math.cos(aim) * 230,
+              dy: Math.sin(aim) * 230,
+              angle: aim,
+              remainingLife: 2.0,
+              damage: 13
+            });
+          }
+        }
+        enemy.facingAngle = angleToPlayer;
       }
 
       enemy.pos.x = Math.min(Math.max(enemy.pos.x, ARENA_BOUNDS.minX - 28), ARENA_BOUNDS.maxX + 28);
@@ -1545,7 +3504,7 @@ export class PanicArena3D {
 
   #applyDamageToPlayer(amount) {
     this.playerHP = Math.max(0, this.playerHP - amount);
-    this.invulnerabilityTimer = 0.40;
+    this.invulnerabilityTimer = 0.58 + this.upgradeStats.iframeBonus;
     this.justTookDamageFlag = true;
     this.#triggerShake(7.0);
     this.#spawnBurst(this.playerPos.x, this.playerPos.y, RELICARIO_PALETTE.vermilion, 10, 115);
@@ -1599,6 +3558,10 @@ export class PanicArena3D {
     let writeIdx = 0;
     const px = this.playerPos.x;
     const py = this.playerPos.y;
+    const magnetRadius = 104.0 + this.upgradeStats.radiusBonus;
+    const magnetRadiusSq = magnetRadius * magnetRadius;
+    const healAmount = 30 + this.upgradeStats.medkitHealBonus;
+
     for (let i = 0; i < this.medkits.length; i++) {
       const kit = this.medkits[i];
       kit.age += dt;
@@ -1607,9 +3570,9 @@ export class PanicArena3D {
       let dy = py - kit.pos.y;
       let dSq = dx * dx + dy * dy;
 
-      if (dSq > 0.0001 && dSq <= 96.0 * 96.0) {
+      if (dSq > 0.0001 && dSq <= magnetRadiusSq) {
         const d = Math.sqrt(dSq);
-        const pullSpeed = 155.0 + (1.0 - d / 96.0) * 140.0;
+        const pullSpeed = 165.0 + this.upgradeStats.radiusBonus * 0.65 + (1.0 - d / magnetRadius) * 150.0;
         const step = Math.min(d, pullSpeed * dt);
         kit.pos.x += (dx / d) * step;
         kit.pos.y += (dy / d) * step;
@@ -1620,7 +3583,7 @@ export class PanicArena3D {
 
       if (dSq <= 30.0 * 30.0) {
         const prevHP = this.playerHP;
-        this.playerHP = Math.min(PLAYER_MAX_HP, this.playerHP + 28);
+        this.playerHP = Math.min(this.playerMaxHP, this.playerHP + healAmount);
         const actualHeal = this.playerHP - prevHP;
         this.medkitsCollected += 1;
 
@@ -1643,10 +3606,12 @@ export class PanicArena3D {
   }
 
   #spawnEnemy(directive) {
+    if (this.enemies.length >= POOL_CAPS.DESOLLADO + POOL_CAPS.JAULA + POOL_CAPS.MARTIR) return;
     const archetype = this.#pickArchetype(directive);
     const spawnPoint = this.#pickSpawnPoint(directive);
     const tProgress = Math.min(1, Math.max(0, this.elapsedTime / TOTAL_RUN_DURATION));
-    const cooldownScale = Math.max(0.58, 1.0 - tProgress * 0.40);
+    const cooldownScale = Math.max(0.52, 0.96 - tProgress * 0.40);
+    const lvlScale = Math.max(0, this.playerLevel - 1);
 
     let hp;
     let speed;
@@ -1655,28 +3620,56 @@ export class PanicArena3D {
     let initialAbilityCD;
 
     if (archetype === 'desollado') {
-      if (this.enemies.length >= POOL_CAPS.DESOLLADO + POOL_CAPS.JAULA + POOL_CAPS.MARTIR) return;
-      hp = 2 + Math.floor(this.elapsedTime / 16.0) + (this.playerLevel >= 5 ? 1 : 0);
-      speed = randomRange(120, 144) * (1.0 + tProgress * 0.16);
+      hp = Number((1.8 + (this.elapsedTime / 18.0) * 0.85 + lvlScale * 0.18).toFixed(2));
+      speed = randomRange(114, 136) * (1.0 + tProgress * 0.14);
       hitRadius = 12.5;
-      contactDamage = 14 + Math.floor(this.elapsedTime / 20.0) * 2;
-      initialAbilityCD = randomRange(1.4, 2.6) * cooldownScale;
+      contactDamage = 12 + Math.floor(this.elapsedTime / 25.0) * 2;
+      initialAbilityCD = randomRange(1.5, 2.7) * cooldownScale;
+    } else if (archetype === 'incensario') {
+      // Bomba de brasa: rápida, poca vida, explota al morir o al pegarse al jugador
+      hp = Number((2.6 + tProgress * 3.2 + lvlScale * 0.25).toFixed(2));
+      speed = randomRange(118, 138) * (1.0 + tProgress * 0.14);
+      hitRadius = 14.0;
+      contactDamage = 13 + Math.floor(this.elapsedTime / 26.0) * 2;
+      initialAbilityCD = 0;
+    } else if (archetype === 'tejedor') {
+      // Francotirador astral: mantiene distancia y dispara 2 saetas en V
+      hp = Number((5.2 + tProgress * 5.8 + lvlScale * 0.5).toFixed(2));
+      speed = randomRange(82, 96) * (1.0 + tProgress * 0.12);
+      hitRadius = 15.5;
+      contactDamage = 13 + Math.floor(this.elapsedTime / 26.0) * 2;
+      initialAbilityCD = randomRange(1.6, 2.4) * cooldownScale;
+    } else if (archetype === 'coloso_menor') {
+      // Gólem divisor: resistente, se parte en 2 mini-Desollados al caer
+      hp = Number((11.5 + tProgress * 10.5 + lvlScale * 0.85).toFixed(2));
+      speed = randomRange(66, 78) * (1.0 + tProgress * 0.12);
+      hitRadius = 21.0;
+      contactDamage = 17 + Math.floor(this.elapsedTime / 28.0) * 2;
+      initialAbilityCD = 0;
+    } else if (archetype === 'sombra') {
+      // Espectro abisal: se teletransporta alrededor del jugador y lanza daga
+      hp = Number((6.5 + tProgress * 6.5 + lvlScale * 0.55).toFixed(2));
+      speed = randomRange(92, 108) * (1.0 + tProgress * 0.14);
+      hitRadius = 15.5;
+      contactDamage = 14 + Math.floor(this.elapsedTime / 26.0) * 2;
+      initialAbilityCD = randomRange(1.8, 2.6) * cooldownScale;
     } else if (archetype === 'jaula') {
-      hp = 18 + Math.floor(tProgress * 16.0);
-      speed = randomRange(62, 72) * (1.0 + tProgress * 0.18);
+      hp = Number((16 + tProgress * 15.0 + lvlScale * 1.2).toFixed(2));
+      speed = randomRange(58, 68) * (1.0 + tProgress * 0.14);
       hitRadius = 25.5;
-      contactDamage = 24 + Math.floor(this.elapsedTime / 25.0) * 3;
-      initialAbilityCD = randomRange(2.2, 3.4) * cooldownScale;
+      contactDamage = 20 + Math.floor(this.elapsedTime / 28.0) * 2;
+      initialAbilityCD = randomRange(2.3, 3.5) * cooldownScale;
     } else {
-      hp = 9 + Math.floor(tProgress * 8.0);
-      speed = randomRange(102, 118) * (1.0 + tProgress * 0.16);
+      hp = Number((8 + tProgress * 8.0 + lvlScale * 0.7).toFixed(2));
+      speed = randomRange(98, 114) * (1.0 + tProgress * 0.14);
       hitRadius = 16.5;
-      contactDamage = 18 + Math.floor(this.elapsedTime / 20.0) * 2;
-      initialAbilityCD = randomRange(1.1, 1.8) * cooldownScale;
+      contactDamage = 15 + Math.floor(this.elapsedTime / 25.0) * 2;
+      initialAbilityCD = randomRange(1.25, 1.95) * cooldownScale;
     }
 
     this.enemies.push({
       archetype,
+      renderScale: 1.0,
       pos: spawnPoint,
       hp,
       maxHP: hp,
@@ -1687,6 +3680,7 @@ export class PanicArena3D {
       phaseOffset: randomRange(0, Math.PI * 2),
       abilityCooldown: initialAbilityCD,
       abilityActiveTimer: 0,
+      isIgniting: false,
       isSpitTelegraphing: false,
       comboDashUsed: false,
       stalkerPhase: { type: 'stalking', cooldown: initialAbilityCD },
@@ -1707,8 +3701,20 @@ export class PanicArena3D {
   #pickArchetype(directive) {
     const total = Math.max(0.001, directive.swarmWeight + directive.tankWeight + directive.stalkerWeight);
     const roll = Math.random() * total;
-    if (roll < directive.swarmWeight) return 'desollado';
-    if (roll < directive.swarmWeight + directive.tankWeight) return 'jaula';
+    if (roll < directive.swarmWeight) {
+      // En el grupo de enjambre alterna entre Desollados e Incensarios Volátiles
+      if (this.elapsedTime >= 8 && Math.random() < 0.28) return 'incensario';
+      return 'desollado';
+    }
+    if (roll < directive.swarmWeight + directive.tankWeight) {
+      // En el grupo pesado alterna entre Jaulas y Colosos Menores divisores
+      if (this.elapsedTime >= 14 && Math.random() < 0.42) return 'coloso_menor';
+      return 'jaula';
+    }
+    // En el grupo de especialistas alterna entre Mártires, Tejedores Astrales y Sombras Abisales
+    const specRoll = Math.random();
+    if (this.elapsedTime >= 10 && specRoll < 0.34) return 'tejedor';
+    if (this.elapsedTime >= 18 && specRoll < 0.65) return 'sombra';
     return 'martir';
   }
 
@@ -1922,13 +3928,39 @@ export class PanicArena3D {
       pools.addGlow(g.x, g.y, g.z, g.size, g.color, g.opacity);
     }
 
-    // Enemigos
+    // Halo en el suelo bajo el Boss activo y sellos explosivos del Jefe Final
+    if (this.activeBoss) {
+      pools.addGlow(
+        this.activeBoss.pos.x,
+        1.2,
+        -this.activeBoss.pos.y,
+        this.activeBoss.isFinal ? 145 : 115,
+        this._colGold,
+        0.55
+      );
+    }
+    for (let i = 0; i < this.bossZones.length; i++) {
+      const z = this.bossZones[i];
+      const progress = 1.0 - z.remaining / Math.max(0.01, z.maxTime);
+      pools.addGlow(z.x, 1.3, -z.y, z.radius * 2.1, this._colGold, 0.35 + progress * 0.45);
+      pools.addRing(z.x, 1.6, -z.y, z.radius * (0.3 + progress * 0.7), z.remaining * 6, this._colGold, 0.92);
+    }
+
+    // Enemigos (7 arquetipos distintos)
     for (let i = 0; i < this.enemies.length; i++) {
       const enemy = this.enemies[i];
       if (enemy.archetype === 'desollado') {
         pools.addDesollado(enemy);
       } else if (enemy.archetype === 'jaula') {
         pools.addJaula(enemy);
+      } else if (enemy.archetype === 'incensario') {
+        pools.addIncensario(enemy);
+      } else if (enemy.archetype === 'tejedor') {
+        pools.addTejedor(enemy);
+      } else if (enemy.archetype === 'coloso_menor') {
+        pools.addColosoMenor(enemy);
+      } else if (enemy.archetype === 'sombra') {
+        pools.addSombra(enemy);
       } else {
         pools.addMartir(enemy);
       }
@@ -1995,11 +4027,27 @@ export class PanicArena3D {
       elapsedTime: this.elapsedTime,
       timeRemaining: Math.max(0, TOTAL_RUN_DURATION - this.elapsedTime),
       hp: this.playerHP,
-      maxHP: PLAYER_MAX_HP,
+      maxHP: this.playerMaxHP,
       kills: this.kills,
       playerLevel: this.playerLevel,
+      xpProgress: this.currentXP / Math.max(1, this.xpToNextLevel),
+      upgradeRanks: { ...this.upgradeRanks },
+      upgradeBestRarity: { ...this.upgradeBestRarity },
+      activeBoss: this.activeBoss
+        ? {
+            bossNumber: this.activeBoss.bossNumber,
+            title: this.activeBoss.title,
+            subtitle: this.activeBoss.subtitle,
+            isFinal: this.activeBoss.isFinal,
+            enraged: this.activeBoss.enraged,
+            hp: Math.ceil(this.activeBoss.hp),
+            maxHP: this.activeBoss.maxHP,
+            color: this.activeBoss.color
+          }
+        : null,
       stressIndex: this.stressTracker.currentStress,
       stressTier: this.stressTracker.currentTier,
+      aiState: this.currentAiState,
       directorMessage: activeDirective?.microMessage || fallbackMsg,
       isInterventionActive: Boolean(activeDirective?.isInterventionActive),
       medkitsCollected: this.medkitsCollected,

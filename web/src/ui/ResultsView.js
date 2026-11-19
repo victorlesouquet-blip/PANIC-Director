@@ -1,154 +1,162 @@
-// Vista de Resultados, Telemetría Comparativa de Clase (1985 vs 2026 vs Híbrido) y Unificación JSON
+// Pestaña de Partidas y Resultados:
+//  - Resumen directo y claro al terminar de jugar
+//  - Resumen general intuitivo de la clase (sin tablas complejas por fases)
+//  - Historial reciente y opciones plegables
 
-import { CAMPAIGN_PHASES, GAME_MODE_MAP, RELICARIO_PALETTE, stressTierFromIndex } from '../engine/constants.js';
+import { RELICARIO_PALETTE } from '../engine/constants.js';
 import { renderAvatarSVG } from '../scene/avatarSVGs.js';
-import { escapeHtml } from './domUtils.js';
+import { bindAppNavEvents, escapeHtml, formatSimpleTime, renderAppNavHtml } from './domUtils.js';
 
-function formatStatPct(stats, val) {
-  return stats.runCount > 0 ? `${Math.round(val)}%` : '—';
-}
-
-function formatStatSec(stats, val) {
-  return stats.runCount > 0 ? `${val.toFixed(1)}s` : '—';
-}
-
-function formatStatNum(stats, val) {
-  return stats.runCount > 0 ? `${val.toFixed(1)}` : '—';
-}
+const HISTORY_PREVIEW = 6;
 
 export function mountResultsView(
   root,
-  { lastRecord, store, liveSync = null, roomCode = 'CLASE', onPlayAgain, onReturnToStart, onOpenPlayers, onOpenDashboard }
+  {
+    lastRecord,
+    store,
+    liveSync = null,
+    roomCode = 'CLASE',
+    onPlayAgain,
+    onReturnToStart,
+    onOpenPlayers,
+    onOpenDashboard,
+    onNavigate
+  }
 ) {
   let syncNotice = '';
   let syncError = false;
   let pasteDrawerOpen = false;
   let confirmResetOpen = false;
+  let showAllHistory = false;
+  let moreOpen = false;
+
+  const navigateTab = (tab) => {
+    if (onNavigate) {
+      onNavigate(tab);
+      return;
+    }
+    if (tab === 'start') onReturnToStart?.();
+    else if (tab === 'players') onOpenPlayers?.(null);
+    else if (tab === 'dashboard') onOpenDashboard?.();
+  };
 
   const render = () => {
-    const stats1985 = store.stats('classic1985');
-    const stats2026 = store.stats('director2026');
-    const statsHybrid = store.stats('hybrid1985x2026');
     const totalCount = store.records.length;
+    const survivedCount = store.records.filter((r) => r.didSurvive).length;
+    const bestTime = totalCount > 0 ? Math.max(...store.records.map((r) => r.survivedSeconds || 0)) : 0;
+    const avgKills =
+      totalCount > 0
+        ? Math.round(store.records.reduce((s, r) => s + (r.kills || 0), 0) / totalCount)
+        : 0;
 
-    const topSectionHtml = lastRecord
-      ? buildRunSummaryHtml(lastRecord, roomCode)
-      : `
-        <header class="panel telemetry-head-card">
-          <div>
-            <h1 class="telemetry-title">TELEMETRÍA DE CLASE</h1>
-            <p class="panel-subcopy">Sala en vivo: <strong>${escapeHtml(roomCode)}</strong> · Campaña 2 Min (3 Fases)</p>
-          </div>
-          <span class="pill-badge-cyan">${totalCount} REG.</span>
-        </header>
-      `;
-
-    const insightText = buildClassInsightText(stats1985, stats2026, statsHybrid, totalCount);
+    const records = showAllHistory ? store.records : store.records.slice(0, HISTORY_PREVIEW);
+    const hiddenCount = totalCount - HISTORY_PREVIEW;
 
     root.innerHTML = `
-      <div class="results-layout">
+      <div class="app-page results-layout">
+        ${renderAppNavHtml({
+          activeTab: 'results',
+          playerCount: store.uniquePlayerCount,
+          runCount: totalCount,
+          roomCode
+        })}
+
         <main class="screen-shell results-scroll">
-          ${topSectionHtml}
+          ${lastRecord ? buildRunSummaryHtml(lastRecord, roomCode) : ''}
 
-          <button type="button" id="btn-dashboard-shortcut" class="btn-projector-banner">
-            <span class="projector-icon">📺</span>
-            <span class="projector-copy">
-              <strong>DASHBOARD EN VIVO · SALA ${escapeHtml(roomCode)}</strong>
-              <small>Ver código QR, podio y estadísticas en tiempo real</small>
-            </span>
-            <span class="chevron-right">›</span>
-          </button>
-
-          <button type="button" id="btn-players-shortcut" class="players-banner-btn">
-            <span class="players-banner-icon">★</span>
-            <span class="players-banner-text">
-              <strong>JUGADORES Y RÁNKING DE MEDIAS</strong>
-              <small>${store.uniquePlayerCount} ${store.uniquePlayerCount === 1 ? 'jugador registrado' : 'jugadores registrados'} · Toca para ver perfiles</small>
-            </span>
-            <span class="chevron-right">›</span>
-          </button>
-
-          <section class="panel" aria-label="Comparativa entre las 3 fases de IA">
+          <section class="panel" aria-label="Resumen general">
             <div class="panel-head">
-              <h2 class="panel-label gold-label">COMPARATIVA POR FASE · 1985 · HÍBR. · 2026</h2>
-              <span class="micro-mono-muted">EN VIVO</span>
+              <h1 class="telemetry-title">Resumen de partidas</h1>
+              <span class="pill-badge-cyan">${totalCount} ${totalCount === 1 ? 'partida' : 'partidas'}</span>
             </div>
 
-            <div class="comparison-table" role="table" aria-label="Tabla comparativa de motores">
-              <div class="cmp-row cmp-header" role="row">
-                <span role="columnheader">MÉTRICA</span>
-                <span role="columnheader" style="color:${RELICARIO_PALETTE.oldBone};">F1·1985</span>
-                <span role="columnheader" style="color:${RELICARIO_PALETTE.liturgicalGold};">F2·HÍBR.</span>
-                <span role="columnheader" style="color:${RELICARIO_PALETTE.vermilion};">F3·2026</span>
+            <div class="simple-stats-grid">
+              <div class="simple-stat-card">
+                <span class="simple-stat-val" style="color:${RELICARIO_PALETTE.ivory};">${totalCount}</span>
+                <span class="simple-stat-lbl">Jugadas</span>
               </div>
-              ${comparisonRow('Incursiones', `${stats1985.runCount}`, `${statsHybrid.runCount}`, `${stats2026.runCount}`)}
-              ${comparisonRow('Fase superada', formatStatPct(stats1985, stats1985.survivalRatePercent), formatStatPct(statsHybrid, statsHybrid.survivalRatePercent), formatStatPct(stats2026, stats2026.survivalRatePercent))}
-              ${comparisonRow('Tiempo medio', formatStatSec(stats1985, stats1985.avgSurvivedSeconds), formatStatSec(statsHybrid, statsHybrid.avgSurvivedSeconds), formatStatSec(stats2026, stats2026.avgSurvivedSeconds))}
-              ${comparisonRow('Bajas medias', formatStatNum(stats1985, stats1985.avgKills), formatStatNum(statsHybrid, statsHybrid.avgKills), formatStatNum(stats2026, stats2026.avgKills))}
-              ${comparisonRow('Estrés medio', formatStatPct(stats1985, stats1985.avgStress), formatStatPct(statsHybrid, statsHybrid.avgStress), formatStatPct(stats2026, stats2026.avgStress))}
-              ${comparisonRow('Estrés pico', formatStatPct(stats1985, stats1985.avgPeakStress), formatStatPct(statsHybrid, statsHybrid.avgPeakStress), formatStatPct(stats2026, stats2026.avgPeakStress))}
+              <div class="simple-stat-card">
+                <span class="simple-stat-val" style="color:${RELICARIO_PALETTE.graceJade};">${survivedCount}</span>
+                <span class="simple-stat-lbl">Victorias (2:00)</span>
+              </div>
+              <div class="simple-stat-card">
+                <span class="simple-stat-val" style="color:${RELICARIO_PALETTE.liturgicalGold};">${totalCount > 0 ? formatSimpleTime(bestTime) : '—'}</span>
+                <span class="simple-stat-lbl">Mejor tiempo</span>
+              </div>
+              <div class="simple-stat-card">
+                <span class="simple-stat-val" style="color:${RELICARIO_PALETTE.coldSilver};">${totalCount > 0 ? avgKills : '—'}</span>
+                <span class="simple-stat-lbl">Kills medias</span>
+              </div>
             </div>
+
+            <button type="button" id="btn-players-shortcut" class="players-banner-btn">
+              <span class="players-banner-icon">♛</span>
+              <span class="players-banner-text">
+                <strong>Ver clasificación de jugadores</strong>
+                <small>${store.uniquePlayerCount} ${store.uniquePlayerCount === 1 ? 'jugador en el ránking' : 'jugadores en el ránking'}</small>
+              </span>
+              <span class="chevron-right">›</span>
+            </button>
           </section>
 
-          <aside class="insight-banner" aria-label="Lectura de clase">
-            <span class="insight-icon">∿</span>
-            <p>${escapeHtml(insightText)}</p>
-          </aside>
-
-          <section id="class-sync-section" class="panel" aria-label="Unificar partidas de toda la clase">
+          <section class="panel-group" aria-label="Últimas partidas">
             <div class="panel-head">
-              <h2 class="panel-label">UNIFICAR DATOS DE LA CLASE (JSON)</h2>
-              <span class="micro-mono-cyan">MULTI-DISPOSITIVO</span>
+              <h2 class="panel-label">Últimas partidas</h2>
             </div>
-            <p class="panel-subcopy">
-              Además de la sincronización en directo por sala, puedes exportar o fusionar manualmente un archivo JSON.
-            </p>
-            <div class="sync-actions-grid">
-              <button type="button" id="btn-copy-json" class="btn-sync">Copiar mi JSON</button>
-              <button type="button" id="btn-download-json" class="btn-sync">Descargar .json</button>
-              <button type="button" id="btn-import-file" class="btn-sync btn-sync-accent">Cargar archivo .json</button>
-              <button type="button" id="btn-toggle-paste-json" class="btn-sync btn-sync-accent">Pegar JSON aquí</button>
-            </div>
-            <input id="input-import-file" type="file" accept=".json,application/json" hidden />
-
-            ${pasteDrawerOpen ? `
-              <div class="paste-drawer">
-                <label class="sr-only" for="textarea-import-json">Pega aquí el JSON exportado</label>
-                <textarea id="textarea-import-json" class="json-textarea" rows="3" placeholder="Pega aquí el texto JSON de otro compañero..."></textarea>
-                <button type="button" id="btn-merge-pasted-json" class="btn-merge-confirm">Fusionar en la tabla y ránking</button>
-              </div>
-            ` : ''}
-
-            ${syncNotice ? `<p class="sync-notice ${syncError ? 'is-error' : ''}" role="status">${escapeHtml(syncNotice)}</p>` : ''}
-          </section>
-
-          <section class="panel-group" aria-label="Historial reciente">
-            <div class="panel-head">
-              <h2 class="panel-label">HISTORIAL DE PARTIDAS (${totalCount})</h2>
-              ${totalCount > 0 ? `<button type="button" id="btn-ask-reset" class="btn-link-danger">Reiniciar datos</button>` : ''}
-            </div>
-
             ${totalCount === 0
-              ? `<p class="empty-copy">Todavía no hay partidas guardadas. Juega una partida de 2 minutos (3 fases) para registrar datos.</p>`
-              : `<div class="history-list">
-                  ${store.records.map((rec) => buildHistoryRowHtml(rec)).join('')}
+              ? `<div class="panel empty-panel">
+                  <p class="empty-copy">Todavía no hay partidas guardadas. ¡Juega la primera!</p>
                 </div>`
+              : `<div class="history-list">${records.map((rec) => buildHistoryRowHtml(rec)).join('')}</div>
+                 ${hiddenCount > 0
+                   ? `<button type="button" id="btn-toggle-history" class="text-link-btn center-link">${showAllHistory ? 'Mostrar menos' : `Ver las ${totalCount} partidas`}</button>`
+                   : ''}`
             }
           </section>
+
+          <details id="more-options" class="more-options" ${moreOpen ? 'open' : ''}>
+            <summary>Opciones de datos y sala</summary>
+            <div class="more-options-body">
+              <p class="panel-subcopy">Comparte partidas por archivo o gestiona los datos de la sala <strong>${escapeHtml(roomCode)}</strong>.</p>
+
+              <button type="button" id="btn-dashboard-shortcut" class="btn-sync btn-sync-accent btn-block">📺 Abrir vista de sala / proyector</button>
+
+              <div class="sync-actions-grid">
+                <button type="button" id="btn-copy-json" class="btn-sync">Copiar datos</button>
+                <button type="button" id="btn-download-json" class="btn-sync">Descargar .json</button>
+                <button type="button" id="btn-import-file" class="btn-sync btn-sync-accent">Cargar archivo</button>
+                <button type="button" id="btn-toggle-paste-json" class="btn-sync btn-sync-accent">Pegar datos</button>
+              </div>
+              <input id="input-import-file" type="file" accept=".json,application/json" hidden />
+
+              ${pasteDrawerOpen ? `
+                <div class="paste-drawer">
+                  <label class="sr-only" for="textarea-import-json">Pega aquí el JSON exportado</label>
+                  <textarea id="textarea-import-json" class="json-textarea" rows="3" placeholder="Pega aquí los datos copiados de otro dispositivo..."></textarea>
+                  <button type="button" id="btn-merge-pasted-json" class="btn-merge-confirm">Añadir partidas</button>
+                </div>
+              ` : ''}
+
+              ${syncNotice ? `<p class="sync-notice ${syncError ? 'is-error' : ''}" role="status">${escapeHtml(syncNotice)}</p>` : ''}
+
+              ${liveSync ? `<button type="button" id="btn-force-resync" class="btn-sync btn-block">Sincronizar ahora con la sala</button>` : ''}
+              ${totalCount > 0 ? `<button type="button" id="btn-ask-reset" class="btn-link-danger center-link">Borrar historial de este navegador</button>` : ''}
+            </div>
+          </details>
         </main>
 
         <footer class="sticky-bottom-bar">
-          <button type="button" id="btn-change-player" class="btn-footer-secondary">CAMBIAR JUGADOR</button>
-          ${lastRecord ? `<button type="button" id="btn-play-again" class="btn-footer-primary">REPETIR (2 MIN)</button>` : ''}
+          <button type="button" id="btn-change-player" class="btn-footer-secondary">${lastRecord ? 'Cambiar jugador' : 'Ir a Inicio'}</button>
+          <button type="button" id="btn-play-again" class="btn-footer-primary">▶ ${lastRecord ? 'Jugar otra vez' : 'Jugar ahora'}</button>
         </footer>
 
         ${confirmResetOpen ? `
           <div id="reset-confirm-dialog" class="pause-modal" role="dialog" aria-modal="true" aria-labelledby="reset-dialog-title">
             <div class="pause-card">
-              <h2 id="reset-dialog-title" class="pause-title">¿BORRAR TELEMETRÍA?</h2>
-              <p class="panel-subcopy">Se eliminarán todas las partidas y el ránking local de este navegador.</p>
-              <button type="button" id="btn-confirm-reset" class="btn-abort">BORRAR REGISTROS</button>
-              <button type="button" id="btn-cancel-reset" class="btn-resume-ghost">CANCELAR</button>
+              <h2 id="reset-dialog-title" class="pause-title">¿Borrar historial?</h2>
+              <p class="panel-subcopy">Se eliminarán las partidas guardadas en este navegador.</p>
+              <button type="button" id="btn-confirm-reset" class="btn-abort">Sí, borrar todo</button>
+              <button type="button" id="btn-cancel-reset" class="btn-resume-ghost">Cancelar</button>
             </div>
           </div>
         ` : ''}
@@ -159,6 +167,8 @@ export function mountResultsView(
   };
 
   const bindEvents = () => {
+    bindAppNavEvents(root, navigateTab);
+
     root.querySelector('#btn-open-profile-from-run')?.addEventListener('click', () => {
       if (lastRecord) onOpenPlayers(lastRecord.initials);
     });
@@ -170,24 +180,33 @@ export function mountResultsView(
       btn.addEventListener('click', () => onOpenPlayers(btn.dataset.initials));
     });
 
+    root.querySelector('#btn-toggle-history')?.addEventListener('click', () => {
+      showAllHistory = !showAllHistory;
+      render();
+    });
+
+    root.querySelector('#more-options')?.addEventListener('toggle', (e) => {
+      moreOpen = e.target.open;
+    });
+
     root.querySelector('#btn-change-player')?.addEventListener('click', onReturnToStart);
     root.querySelector('#btn-play-again')?.addEventListener('click', onPlayAgain);
 
-    // Exportar / Importar clase
+    // Exportar / Importar
     root.querySelector('#btn-copy-json')?.addEventListener('click', async () => {
       if (store.records.length === 0) {
         syncError = true;
-        syncNotice = 'Aún no hay partidas que exportar.';
+        syncNotice = 'Aún no hay partidas que copiar.';
         render();
         return;
       }
       try {
         await navigator.clipboard.writeText(store.exportJSON());
         syncError = false;
-        syncNotice = `JSON con ${store.records.length} partidas copiado al portapapeles.`;
+        syncNotice = `${store.records.length} partidas copiadas al portapapeles.`;
       } catch {
         syncError = true;
-        syncNotice = 'No se pudo acceder al portapapeles. Usa "Descargar .json".';
+        syncNotice = 'No se pudo copiar. Usa "Descargar .json".';
       }
       render();
     });
@@ -203,13 +222,13 @@ export function mountResultsView(
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `panic-director-telemetria-${new Date().toISOString().slice(0, 10)}.json`;
+      a.download = `panic-director-partidas-${new Date().toISOString().slice(0, 10)}.json`;
       document.body.appendChild(a);
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
       syncError = false;
-      syncNotice = `Descargado archivo con ${store.records.length} registros.`;
+      syncNotice = `Archivo descargado con ${store.records.length} partidas.`;
       render();
     });
 
@@ -223,11 +242,11 @@ export function mountResultsView(
         const added = store.importAndMergeJSON(text);
         syncError = false;
         syncNotice = added > 0
-          ? `Se fusionaron ${added} partidas nuevas en la comparativa y el ránking.`
-          : 'Archivo leído: todas las partidas ya estaban registradas.';
+          ? `Se añadieron ${added} partidas nuevas.`
+          : 'Todas las partidas del archivo ya estaban guardadas.';
       } catch {
         syncError = true;
-        syncNotice = 'Archivo JSON inválido o con formato incompatible.';
+        syncNotice = 'Archivo no válido.';
       }
       render();
     });
@@ -243,12 +262,12 @@ export function mountResultsView(
         const added = store.importAndMergeJSON(raw);
         syncError = false;
         syncNotice = added > 0
-          ? `¡Listo! Se fusionaron ${added} partidas nuevas.`
-          : 'Las partidas pegadas ya figuraban en este navegador.';
+          ? `Listo: se añadieron ${added} partidas nuevas.`
+          : 'Esas partidas ya estaban guardadas.';
         pasteDrawerOpen = false;
       } catch {
         syncError = true;
-        syncNotice = 'JSON no válido. Asegúrate de pegar el texto completo.';
+        syncNotice = 'Datos no válidos. Pega el texto completo.';
       }
       render();
     });
@@ -257,12 +276,10 @@ export function mountResultsView(
       confirmResetOpen = true;
       render();
     });
-
     root.querySelector('#btn-cancel-reset')?.addEventListener('click', () => {
       confirmResetOpen = false;
       render();
     });
-
     root.querySelector('#btn-confirm-reset')?.addEventListener('click', () => {
       store.clearAll();
       confirmResetOpen = false;
@@ -297,63 +314,37 @@ export function mountResultsView(
 }
 
 function buildRunSummaryHtml(rec, roomCode = 'CLASE') {
-  const modeDef = GAME_MODE_MAP[rec.mode] || GAME_MODE_MAP.unified;
   const statusColor = rec.didSurvive ? RELICARIO_PALETTE.graceJade : RELICARIO_PALETTE.vermilion;
-  const stressColor = stressTierFromIndex(rec.averageStress).color;
-  const reachedPhase = rec.reachedPhase || (rec.survivedSeconds >= 80 ? 3 : rec.survivedSeconds >= 40 ? 2 : 1);
-
-  const phaseBreakdownHtml = rec.phaseBreakdown
-    ? `
-      <div class="run-phases-mini-grid">
-        ${CAMPAIGN_PHASES.map((ph) => {
-          const st = rec.phaseBreakdown[ph.id];
-          const entered = st?.entered;
-          return `
-            <div class="run-phase-mini-card" style="border-color:${entered ? ph.accentColor : 'rgba(255,255,255,0.12)'}; opacity:${entered ? '1' : '0.48'};">
-              <span class="run-phase-mini-hdr" style="color:${ph.accentColor};">F${ph.phaseNumber} · ${escapeHtml(ph.shortBadge)}</span>
-              <strong class="run-phase-mini-val">${entered ? `${Number(st.survivedSeconds).toFixed(1)}s · ${st.kills}B` : 'No alcanzada'}</strong>
-              <span class="run-phase-mini-sub">${entered ? `Estrés ${Math.round(st.averageStress)}%` : escapeHtml(ph.windowLabel)}</span>
-            </div>
-          `;
-        }).join('')}
-      </div>
-    `
-    : '';
+  const progressPct = Math.min(100, Math.round((rec.survivedSeconds / 120) * 100));
 
   return `
-    <section class="panel" style="border-color:${statusColor}8C;" aria-label="Resumen de última partida">
+    <section class="panel run-card" style="border-color:${statusColor}8C;" aria-label="Resumen de tu partida">
       <div class="run-summary-top">
         <div class="run-summary-left">
-          ${rec.avatar ? renderAvatarSVG(rec.avatar, 28, true) : ''}
-          <button type="button" id="btn-open-profile-from-run" class="initials-link-pill">
+          ${rec.avatar ? renderAvatarSVG(rec.avatar, 30, true) : ''}
+          <button type="button" id="btn-open-profile-from-run" class="initials-link-pill" title="Ver mi perfil">
             <span>${escapeHtml(rec.initials)}</span>
-            <span class="mini-icon">☺</span>
           </button>
-          <span class="run-mode-label" style="color:${modeDef.accentColor};">FASE ${reachedPhase}/3 ALCANZADA</span>
         </div>
-        <span class="status-pill" style="color:${statusColor}; background:${statusColor}2E;">
-          ${rec.didSurvive ? 'VICTORIA 2:00' : `FASE ${reachedPhase}`}
+        <span class="status-pill" style="color:${statusColor}; background:${statusColor}26;">
+          ${rec.didSurvive ? '★ ¡Victoria!' : `${progressPct}% completado`}
         </span>
       </div>
 
-      <h1 class="result-headline" style="color:${statusColor};">
-        ${rec.didSurvive ? '¡SOBREVIVISTE LOS 2 MINUTOS!' : `CAÍDO A LOS ${rec.survivedSeconds.toFixed(1)}s`}
-      </h1>
+      <h2 class="result-headline" style="color:${statusColor};">
+        ${rec.didSurvive ? '¡Sobreviviste los 2 minutos!' : `Aguantaste ${formatSimpleTime(rec.survivedSeconds)}`}
+      </h2>
 
-      <div class="kpi-strip-4">
-        ${metricPillHtml('TIEMPO', `${rec.survivedSeconds.toFixed(1)}s`, RELICARIO_PALETTE.ivory)}
-        ${metricPillHtml('BAJAS', `${rec.kills}`, RELICARIO_PALETTE.coldSilver)}
-        ${metricPillHtml('ESTRÉS MEDIO', `${Math.round(rec.averageStress)}%`, stressColor)}
-        ${metricPillHtml('CURAS', `${rec.medkitsCollected || 0}`, RELICARIO_PALETTE.graceJade)}
+      <div class="kpi-strip-3">
+        ${metricPillHtml('Tiempo', formatSimpleTime(rec.survivedSeconds), RELICARIO_PALETTE.ivory)}
+        ${metricPillHtml('Kills', `${rec.kills}`, RELICARIO_PALETTE.coldSilver)}
+        ${metricPillHtml('Curas', `${rec.medkitsCollected || 0}`, RELICARIO_PALETTE.graceJade)}
       </div>
 
-      ${phaseBreakdownHtml}
-
-      <div class="run-live-synced-note">
+      <p class="run-live-note">
         <span class="pulse-dot"></span>
-        <span>Enviado en vivo a la sala <strong>${escapeHtml(roomCode)}</strong></span>
-        <button type="button" id="btn-force-resync" class="btn-resync-inline">Re-enviar</button>
-      </div>
+        Resultado enviado a la sala <strong>${escapeHtml(roomCode)}</strong>
+      </p>
     </section>
   `;
 }
@@ -361,51 +352,27 @@ function buildRunSummaryHtml(rec, roomCode = 'CLASE') {
 function metricPillHtml(label, value, color) {
   return `
     <div class="metric-cell">
-      <span class="metric-label">${label}</span>
+      <span class="metric-label">${escapeHtml(label)}</span>
       <span class="metric-val" style="color:${color};">${escapeHtml(value)}</span>
     </div>
   `;
 }
 
-function comparisonRow(label, val1985, valHybrid, val2026) {
-  return `
-    <div class="cmp-row" role="row">
-      <span role="cell" class="cmp-label">${escapeHtml(label)}</span>
-      <span role="cell" class="cmp-num" style="color:${RELICARIO_PALETTE.oldBone};">${escapeHtml(val1985)}</span>
-      <span role="cell" class="cmp-num" style="color:${RELICARIO_PALETTE.liturgicalGold};">${escapeHtml(valHybrid)}</span>
-      <span role="cell" class="cmp-num" style="color:${RELICARIO_PALETTE.ivory};">${escapeHtml(val2026)}</span>
-    </div>
-  `;
-}
-
 function buildHistoryRowHtml(rec) {
-  const reachedPhase = rec.reachedPhase || (rec.survivedSeconds >= 80 ? 3 : rec.survivedSeconds >= 40 ? 2 : 1);
-  const phaseDef = CAMPAIGN_PHASES[Math.min(2, Math.max(0, reachedPhase - 1))];
-  const timeColor = rec.didSurvive ? RELICARIO_PALETTE.graceJade : RELICARIO_PALETTE.vermilion;
-  const stressColor = stressTierFromIndex(rec.averageStress).color;
+  const timeColor = rec.didSurvive ? RELICARIO_PALETTE.graceJade : RELICARIO_PALETTE.ivory;
 
   return `
     <button type="button" class="history-row-btn" data-initials="${escapeHtml(rec.initials)}">
       <span class="hist-left">
-        ${rec.avatar ? renderAvatarSVG(rec.avatar, 22, false) : `<span class="monogram-dot">·</span>`}
+        ${rec.avatar ? renderAvatarSVG(rec.avatar, 24, false) : `<span class="monogram-dot">·</span>`}
         <strong class="hist-initials">${escapeHtml(rec.initials)}</strong>
-        <span class="mode-badge-sm" style="color:${phaseDef.accentColor}; background:${phaseDef.accentColor}26;">
-          F${reachedPhase}·${escapeHtml(phaseDef.shortBadge)}
-        </span>
+        ${rec.didSurvive ? `<span class="mode-badge-sm" style="color:${RELICARIO_PALETTE.graceJade}; background:${RELICARIO_PALETTE.graceJade}22;">★ Victoria</span>` : ''}
       </span>
       <span class="hist-right">
-        <span class="hist-sec" style="color:${timeColor};">${rec.survivedSeconds.toFixed(1)}s</span>
-        <span class="hist-kills">${rec.kills}B</span>
-        <span class="hist-stress" style="color:${stressColor};">${Math.round(rec.averageStress)}%</span>
+        <span class="hist-sec" style="color:${timeColor};">${formatSimpleTime(rec.survivedSeconds)}</span>
+        <span class="hist-kills">${rec.kills} kills</span>
         <span class="chevron-right">›</span>
       </span>
     </button>
   `;
-}
-
-function buildClassInsightText(stats1985, stats2026, statsHybrid, totalCount) {
-  if (stats1985.runCount > 0 && (statsHybrid.runCount > 0 || stats2026.runCount > 0)) {
-    return `Con ${totalCount} partidas registradas: la Fase 1 (1985) se supera el ${Math.round(stats1985.survivalRatePercent)}% de las veces (${Math.round(stats1985.avgStress)}% estrés), la Fase 2 (Híbrido) el ${Math.round(statsHybrid.survivalRatePercent)}% (${Math.round(statsHybrid.avgStress)}% estrés) y la Fase 3 (IA Directora) el ${Math.round(stats2026.survivalRatePercent)}% (${Math.round(stats2026.avgStress)}% estrés).`;
-  }
-  return 'Cada partida de 2 minutos atraviesa las 3 fases (0-40s Modo 1985, 40s-1m20s Híbrido y 1m20s-2m00s IA Directora) y alimenta automáticamente esta comparativa.';
 }
