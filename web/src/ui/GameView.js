@@ -118,6 +118,7 @@ export function mountGameView(root, { initials, avatarId, audio, onProgressRun, 
         <div id="hud-boss-bar" class="hud-boss-bar" hidden aria-label="Salud del Jefe">
           <div class="hud-boss-top">
             <span id="hud-boss-title" class="hud-boss-title">💀 JEFE · COLOSO DE CENIZA</span>
+            <span id="hud-boss-ability" class="hud-boss-ability">🌋 Crisol Sísmico de Forja</span>
             <span id="hud-boss-hp-text" class="hud-boss-hp-text">100 / 100</span>
           </div>
           <div class="hud-boss-track">
@@ -197,6 +198,7 @@ export function mountGameView(root, { initials, avatarId, audio, onProgressRun, 
   const elKills = root.querySelector('#hud-kills');
   const elBossBar = root.querySelector('#hud-boss-bar');
   const elBossTitle = root.querySelector('#hud-boss-title');
+  const elBossAbility = root.querySelector('#hud-boss-ability');
   const elBossHpText = root.querySelector('#hud-boss-hp-text');
   const elBossFill = root.querySelector('#hud-boss-fill');
   const elAiBar = root.querySelector('#hud-ai-bar');
@@ -394,11 +396,14 @@ export function mountGameView(root, { initials, avatarId, audio, onProgressRun, 
       if (snap.activeBoss && elBossBar) {
         const b = snap.activeBoss;
         elBossBar.hidden = false;
-        elBossBar.style.borderColor = `${b.color}AA`;
+        elBossBar.style.borderColor = `${b.color}88`;
         const icon = b.isFinal ? (b.enraged ? '🔥' : '👑') : '💀';
         const prefix = b.isFinal ? 'JEFE FINAL' : `JEFE ${b.bossNumber}/3`;
         elBossTitle.textContent = `${icon} ${prefix} · ${b.title}`;
         elBossTitle.style.color = b.color;
+        if (elBossAbility) {
+          elBossAbility.textContent = b.activeAbilityLabel || b.signatureName || b.subtitle || '';
+        }
         elBossHpText.textContent = `${b.hp} / ${b.maxHP}`;
         const bPct = Math.min(100, Math.max(0, (b.hp / Math.max(1, b.maxHP)) * 100));
         elBossFill.style.width = `${bPct.toFixed(1)}%`;
