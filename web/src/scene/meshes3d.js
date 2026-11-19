@@ -627,20 +627,20 @@ export function buildPlayerAvatar3D(avatarId, assets) {
 // MARK: - Pools Instanciados de Arena 3D (80 enemigos + 400 VFX en ~25 draw calls totales)
 
 export const POOL_CAPS = {
-  DESOLLADO: 96,
-  JAULA: 48,
-  RIBS: 240,
-  MARTIR: 64,
-  MARTIR_ARMS: 128,
+  DESOLLADO: 112,
+  JAULA: 56,
+  RIBS: 260,
+  MARTIR: 72,
+  MARTIR_ARMS: 144,
   MEDKIT: 8,
   MEDKIT_CROSS: 16,
-  PLAYER_PROJ: 160,
-  ENEMY_PROJ: 144,
-  PARTICLES: 320,
-  GHOSTS: 64,
-  RINGS: 160,
-  GLOWS: 300,
-  SPECIAL: 380
+  PLAYER_PROJ: 180,
+  ENEMY_PROJ: 256,
+  PARTICLES: 400,
+  GHOSTS: 72,
+  RINGS: 220,
+  GLOWS: 440,
+  SPECIAL: 768
 };
 
 export class InstancedArenaPools {
@@ -660,6 +660,9 @@ export class InstancedArenaPools {
     this.colIvory = new THREE.Color(RELICARIO_PALETTE.ivory);
     this.colGraceJade = new THREE.Color(RELICARIO_PALETTE.graceJade);
     this.colOrange = new THREE.Color(RELICARIO_PALETTE.emberOrange);
+    this.colAmber = new THREE.Color('#FDE047');
+    this.colStone = new THREE.Color('#8E8276');
+    this.colIron = new THREE.Color('#4B5563');
     this.colPurple = new THREE.Color('#A855F7');
     this.colDarkPurple = new THREE.Color('#3B0764');
     this.colOldBone = new THREE.Color(RELICARIO_PALETTE.oldBone);
@@ -788,6 +791,16 @@ export class InstancedArenaPools {
     assets.trackMaterial(eProjMat);
     this.enemyProjMesh = this.#makeInstanced(assets.boneBoltGeo, eProjMat, POOL_CAPS.ENEMY_PROJ, false);
 
+    const projMat = new THREE.MeshPhongMaterial({
+      color: '#FFFFFF',
+      emissive: '#2A1D1B',
+      emissiveIntensity: 0.44,
+      shininess: 48
+    });
+    assets.trackMaterial(projMat);
+    this.projStoneMesh = this.#makeInstanced(assets.icosaUnit, projMat, POOL_CAPS.ENEMY_PROJ, true);
+    this.projSphereMesh = this.#makeInstanced(assets.sphereUnit, projMat, POOL_CAPS.ENEMY_PROJ, true);
+
     // 8. Partículas aditivas (1 draw call, se atenúan por color + escala sin alpha-sorting)
     const particleMat = new THREE.MeshBasicMaterial({
       color: '#FFFFFF',
@@ -868,6 +881,8 @@ export class InstancedArenaPools {
     this.cMedkitCross = 0;
     this.cPlayerProj = 0;
     this.cEnemyProj = 0;
+    this.cProjStone = 0;
+    this.cProjSphere = 0;
     this.cParticle = 0;
     this.cGhost = 0;
     this.cSpecCore = 0;
