@@ -635,11 +635,12 @@ export const POOL_CAPS = {
   MEDKIT: 8,
   MEDKIT_CROSS: 16,
   PLAYER_PROJ: 160,
-  ENEMY_PROJ: 128,
+  ENEMY_PROJ: 144,
   PARTICLES: 320,
   GHOSTS: 64,
-  RINGS: 112,
-  GLOWS: 256
+  RINGS: 160,
+  GLOWS: 300,
+  SPECIAL: 380
 };
 
 export class InstancedArenaPools {
@@ -650,13 +651,18 @@ export class InstancedArenaPools {
 
     // Colores pre-computados para evitar new THREE.Color en bucle
     this.colWhite = new THREE.Color('#FFFFFF');
+    this.colVoid = new THREE.Color('#140E10');
     this.colVermilion = new THREE.Color(RELICARIO_PALETTE.vermilion);
     this.colVisceral = new THREE.Color(RELICARIO_PALETTE.visceralCore);
     this.colGold = new THREE.Color(RELICARIO_PALETTE.liturgicalGold);
     this.colColdSilver = new THREE.Color(RELICARIO_PALETTE.coldSilver);
+    this.colCyan = new THREE.Color('#38BDF8');
     this.colIvory = new THREE.Color(RELICARIO_PALETTE.ivory);
     this.colGraceJade = new THREE.Color(RELICARIO_PALETTE.graceJade);
     this.colOrange = new THREE.Color(RELICARIO_PALETTE.emberOrange);
+    this.colPurple = new THREE.Color('#A855F7');
+    this.colDarkPurple = new THREE.Color('#3B0764');
+    this.colOldBone = new THREE.Color(RELICARIO_PALETTE.oldBone);
 
     // 1. Halos luminosos en suelo (InstancedMesh único)
     const glowOpArr = new Float32Array(POOL_CAPS.GLOWS);
@@ -810,6 +816,20 @@ export class InstancedArenaPools {
     assets.trackMaterial(ghostMat);
     this.ghostsMesh = this.#makeInstanced(ghostBundle.geo, ghostMat, POOL_CAPS.GHOSTS, true);
 
+    // 10. Bestiario Especial y Construcciones de Jefes (5 draw calls instanciados con color)
+    const specMat = new THREE.MeshPhongMaterial({
+      color: '#FFFFFF',
+      emissive: '#221518',
+      emissiveIntensity: 0.48,
+      shininess: 52
+    });
+    assets.trackMaterial(specMat);
+    this.specCoreMesh = this.#makeInstanced(assets.octaUnit, specMat, POOL_CAPS.SPECIAL, true);
+    this.specBodyMesh = this.#makeInstanced(assets.boxUnit, specMat, POOL_CAPS.SPECIAL, true);
+    this.specRingMesh = this.#makeInstanced(assets.torusUnit, specMat, POOL_CAPS.SPECIAL, true);
+    this.specConeMesh = this.#makeInstanced(assets.coneUnit, specMat, POOL_CAPS.SPECIAL, true);
+    this.specWingMesh = this.#makeInstanced(assets.desolladoWingGeo, specMat, POOL_CAPS.SPECIAL, true);
+
     this.resetFrameCounts();
   }
 
@@ -850,6 +870,11 @@ export class InstancedArenaPools {
     this.cEnemyProj = 0;
     this.cParticle = 0;
     this.cGhost = 0;
+    this.cSpecCore = 0;
+    this.cSpecBody = 0;
+    this.cSpecRing = 0;
+    this.cSpecCone = 0;
+    this.cSpecWing = 0;
   }
 
   addGlow(x, yHeight, z, size, color, opacity) {
@@ -886,6 +911,7 @@ export class InstancedArenaPools {
 
     const x = enemy.pos.x;
     const z = -enemy.pos.y;
+    const sc = enemy.renderScale || 1.0;
     const hoverY = Math.sin(enemy.age * 9.0) * 2.0;
     const rotY = enemy.facingAngle + Math.PI * 0.5;
     const sinR = Math.sin(rotY);
@@ -895,49 +921,70 @@ export class InstancedArenaPools {
 
     // Halo en suelo
     if (enemy.isPouncing) {
-      this.addGlow(x, 0.9, z, 46, this.colGold, 0.85);
+      this.addGlow(x, 0.9, z, 46 * sc, this.colGold, 0.85);
     } else {
-      this.addGlow(x, 0.9, z, 36, this.colVermilion, 0.42);
+      this.addGlow(x, 0.9, z, 36 * sc, sc < 0.85 ? this.colGraceJade : this.colVermilion, 0.42);
     }
 
     // Cuerpo Ojo
     _euler.set(0, rotY, 0, 'YXZ');
     _quat.setFromEuler(_euler);
-    _pos.set(x, 12 + hoverY, z);
-    _scale.set(8.2, 7.6, 8.2);
+    _pos.set(x, 12 * sc + hoverY, z);
+    _scale.set(8.2 * sc, 7.6 * sc, 8.2 * sc);
     _mat4.compose(_pos, _quat, _scale);
     this.desoEyeMesh.setMatrixAt(i, _mat4);
 
     // Iris (+6.8 en Z local)
-    _pos.set(x + 6.8 * sinR, 12 + hoverY, z + 6.8 * cosR);
-    _scale.set(4.5, 4.5, 2.2);
+    _pos.set(x + 6.8 * sc * sinR, 12 * sc + hoverY, z + 6.8 * sc * cosR);
+    _scale.set(4.5 * sc, 4.5 * sc, 2.2 * sc);
     _mat4.compose(_pos, _quat, _scale);
     this.desoIrisMesh.setMatrixAt(i, _mat4);
 
     // Pupila (+8.2 en Z local)
     const twitch = Math.sin(enemy.age * 16.0) > 0.86 ? 1.45 : 1.0;
-    _pos.set(x + 8.2 * sinR, 12 + hoverY, z + 8.2 * cosR);
-    _scale.set(1.5 * twitch, 4.2, 1.5);
+    _pos.set(x + 8.2 * sc * sinR, 12 * sc + hoverY, z + 8.2 * sc * cosR);
+    _scale.set(1.5 * twitch * sc, 4.2 * sc, 1.5 * sc);
     _mat4.compose(_pos, _quat, _scale);
     this.desoPupilMesh.setMatrixAt(i, _mat4);
 
     // Ala izquierda (-7.5 X, -1 Z local)
     const flapL = Math.sin(enemy.age * 22.0) * 0.42 + 0.15;
-    _pos.set(x + (-7.5) * cosR + (-1) * sinR, 13 + hoverY, z - (-7.5) * sinR + (-1) * cosR);
+    _pos.set(x + (-7.5 * sc) * cosR + (-1 * sc) * sinR, 13 * sc + hoverY, z - (-7.5 * sc) * sinR + (-1 * sc) * cosR);
     _euler.set(0, rotY, flapL, 'YXZ');
     _quat.setFromEuler(_euler);
-    _scale.set(0.95, 0.95, 0.95);
+    _scale.set(0.95 * sc, 0.95 * sc, 0.95 * sc);
     _mat4.compose(_pos, _quat, _scale);
     this.desoLeftWingMesh.setMatrixAt(i, _mat4);
 
     // Ala derecha (+7.5 X, -1 Z local, rotada Y + PI con escala positiva -> sin normales invertidas)
     const flapR = -Math.sin(enemy.age * 18.5 + 0.7) * 0.46 - 0.15;
-    _pos.set(x + 7.5 * cosR + (-1) * sinR, 13 + hoverY, z - 7.5 * sinR + (-1) * cosR);
+    _pos.set(x + 7.5 * sc * cosR + (-1 * sc) * sinR, 13 * sc + hoverY, z - 7.5 * sc * sinR + (-1 * sc) * cosR);
     _euler.set(0, rotY + Math.PI, -flapR, 'YXZ');
     _quat.setFromEuler(_euler);
-    _scale.set(0.95, 0.95, 0.95);
+    _scale.set(0.95 * sc, 0.95 * sc, 0.95 * sc);
     _mat4.compose(_pos, _quat, _scale);
     this.desoRightWingMesh.setMatrixAt(i, _mat4);
+
+    // Cresta ósea dorsal y aguijón caudal para silueta depredadora más rica
+    if (this.cSpecCone + 2 <= POOL_CAPS.SPECIAL) {
+      const c1 = this.cSpecCone++;
+      _pos.set(x - 6.8 * sc * sinR, 14.5 * sc + hoverY, z - 6.8 * sc * cosR);
+      _euler.set(-Math.PI * 0.42, rotY, 0, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.set(2.2 * sc, 5.2 * sc, 2.2 * sc);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specConeMesh.setMatrixAt(c1, _mat4);
+      this.specConeMesh.setColorAt(c1, enemy.isPouncing ? this.colGold : this.colOldBone);
+
+      const c2 = this.cSpecCone++;
+      _pos.set(x, 19.2 * sc + hoverY, z);
+      _euler.set(-0.35, rotY, 0, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.set(1.8 * sc, 3.8 * sc, 1.8 * sc);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specConeMesh.setMatrixAt(c2, _mat4);
+      this.specConeMesh.setColorAt(c2, sc < 0.85 ? this.colGraceJade : this.colVermilion);
+    }
   }
 
   addJaula(enemy) {
@@ -995,6 +1042,20 @@ export class InstancedArenaPools {
     _mat4.compose(_pos, _quat, _scale);
     this.jaulaSlitMesh.setMatrixAt(i, _mat4);
 
+    // Corona de espinas óseas superiores sobre la Jaula
+    if (this.cSpecCone + 2 <= POOL_CAPS.SPECIAL) {
+      for (const side of [-1, 1]) {
+        const ci = this.cSpecCone++;
+        _pos.set(x + side * 9.5 * cosE, 27.5, z - side * 9.5 * sinE);
+        _euler.set(0.25, eyeRotY, -side * 0.45, 'YXZ');
+        _quat.setFromEuler(_euler);
+        _scale.set(3.2, 6.5, 3.2);
+        _mat4.compose(_pos, _quat, _scale);
+        this.specConeMesh.setMatrixAt(ci, _mat4);
+        this.specConeMesh.setColorAt(ci, enemy.isFrenzied ? this.colGold : this.colOldBone);
+      }
+    }
+
     // Costillas mandibulares giratorias (0 a 4)
     const ribBaseAngle = enemy.ribSpinAngle;
     const ribSlotOffsets = [0, Math.PI * 0.5, Math.PI, Math.PI * 1.5];
@@ -1004,7 +1065,6 @@ export class InstancedArenaPools {
       this.cRib = ri + 1;
 
       const localA = ribSlotOffsets[r];
-      const worldA = localA + ribBaseAngle;
       const lx = Math.cos(localA) * 6;
       const lz = Math.sin(localA) * 6;
       const cosB = Math.cos(ribBaseAngle);
@@ -1226,9 +1286,733 @@ export class InstancedArenaPools {
     this.ghostOpacityArr[i] = opacity;
   }
 
+  // Criatura 4 (Rediseñada 3D): Incensario Volátil (Botafumeiro / Pebetero de Cadenas con Púas Ígneas)
+  addIncensario(enemy) {
+    if (
+      this.cSpecCore >= POOL_CAPS.SPECIAL ||
+      this.cSpecRing + 2 > POOL_CAPS.SPECIAL ||
+      this.cSpecCone + 4 > POOL_CAPS.SPECIAL
+    ) {
+      return;
+    }
+    const x = enemy.pos.x;
+    const z = -enemy.pos.y;
+    const flash = enemy.flashTimer > 0;
+    const pulse = enemy.isIgniting ? 1.28 + Math.sin(enemy.age * 28) * 0.25 : 1.0 + Math.sin(enemy.age * 10) * 0.1;
+    const bobY = 15 + Math.sin(enemy.age * 8) * 2.5;
+
+    this.addGlow(x, 1.0, z, enemy.isIgniting ? 76 : 46, this.colOrange, enemy.isIgniting ? 0.88 : 0.50);
+    if (enemy.isIgniting) {
+      this.addRing(x, 1.5, z, 46, enemy.age * 8, this.colOrange, 0.94);
+    }
+
+    // Núcleo incandescente de magma
+    const ci = this.cSpecCore++;
+    _pos.set(x, bobY, z);
+    _euler.set(enemy.age * 3.5, enemy.age * 5.0, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.set(8.5 * pulse, 11.5 * pulse, 8.5 * pulse);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specCoreMesh.setMatrixAt(ci, _mat4);
+    this.specCoreMesh.setColorAt(ci, flash ? this.colWhite : this.colOrange);
+
+    // Cúpula superior y aguijón inferior del incensario
+    const topCone = this.cSpecCone++;
+    _pos.set(x, bobY + 10.5 * pulse, z);
+    _euler.set(0, enemy.age * 4.0, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.set(5.2 * pulse, 5.5 * pulse, 5.2 * pulse);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specConeMesh.setMatrixAt(topCone, _mat4);
+    this.specConeMesh.setColorAt(topCone, flash ? this.colWhite : this.colGold);
+
+    const botCone = this.cSpecCone++;
+    _pos.set(x, bobY - 10.0 * pulse, z);
+    _euler.set(Math.PI, -enemy.age * 4.0, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.set(4.5 * pulse, 5.2 * pulse, 4.5 * pulse);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specConeMesh.setMatrixAt(botCone, _mat4);
+    this.specConeMesh.setColorAt(botCone, flash ? this.colWhite : this.colOldBone);
+
+    // 2 Púas laterales de brasa
+    for (const side of [-1, 1]) {
+      const sp = this.cSpecCone++;
+      const a = enemy.age * 5.0 + (side === 1 ? 0 : Math.PI);
+      _pos.set(x + Math.cos(a) * 10 * pulse, bobY, z + Math.sin(a) * 10 * pulse);
+      _euler.set(0, -a, -Math.PI * 0.5, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.set(2.6 * pulse, 4.8 * pulse, 2.6 * pulse);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specConeMesh.setMatrixAt(sp, _mat4);
+      this.specConeMesh.setColorAt(sp, flash ? this.colWhite : this.colVermilion);
+    }
+
+    // Doble anillo giroscópico de cadenas doradas
+    const r1 = this.cSpecRing++;
+    _pos.set(x, bobY, z);
+    _euler.set(Math.PI * 0.35, enemy.age * 6.0, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.setScalar(13.5 * pulse);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specRingMesh.setMatrixAt(r1, _mat4);
+    this.specRingMesh.setColorAt(r1, flash ? this.colWhite : this.colGold);
+
+    const r2 = this.cSpecRing++;
+    _euler.set(-Math.PI * 0.35, -enemy.age * 4.5, Math.PI * 0.25, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.setScalar(11.0 * pulse);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specRingMesh.setMatrixAt(r2, _mat4);
+    this.specRingMesh.setColorAt(r2, flash ? this.colWhite : this.colOrange);
+  }
+
+  // Criatura 5 (Rediseñada 3D): Tejedor Astral (Arcángel Francotirador de Cristal con Alas y Astrolabio)
+  addTejedor(enemy) {
+    if (
+      this.cSpecCore + 2 > POOL_CAPS.SPECIAL ||
+      this.cSpecRing + 2 > POOL_CAPS.SPECIAL ||
+      this.cSpecWing + 2 > POOL_CAPS.SPECIAL
+    ) {
+      return;
+    }
+    const x = enemy.pos.x;
+    const z = -enemy.pos.y;
+    const rotY = enemy.facingAngle + Math.PI * 0.5;
+    const sinR = Math.sin(rotY);
+    const cosR = Math.cos(rotY);
+    const flash = enemy.flashTimer > 0;
+    const bob = Math.sin(enemy.age * 5.5) * 2.5;
+
+    this.addGlow(x, 1.0, z, 48, this.colColdSilver, 0.48);
+
+    // Prisma central de cristal
+    const ci = this.cSpecCore++;
+    _pos.set(x, 18 + bob, z);
+    _euler.set(0, enemy.age * 3.0, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.set(8.0, 16.5, 8.0);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specCoreMesh.setMatrixAt(ci, _mat4);
+    this.specCoreMesh.setColorAt(ci, flash ? this.colWhite : this.colColdSilver);
+
+    // Corona astral flotante sobre el prisma
+    const crownIdx = this.cSpecCore++;
+    _pos.set(x, 31 + bob, z);
+    _euler.set(0, -enemy.age * 4.2, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.set(4.5, 6.5, 4.5);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specCoreMesh.setMatrixAt(crownIdx, _mat4);
+    this.specCoreMesh.setColorAt(crownIdx, flash ? this.colWhite : this.colGold);
+
+    // Par de alas serafínicas de cristal
+    const flap = Math.sin(enemy.age * 9.0) * 0.32;
+    const wL = this.cSpecWing++;
+    _pos.set(x - 9.0 * cosR, 20 + bob, z + 9.0 * sinR);
+    _euler.set(0, rotY + flap, 0.25, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.setScalar(1.05);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specWingMesh.setMatrixAt(wL, _mat4);
+    this.specWingMesh.setColorAt(wL, flash ? this.colWhite : this.colCyan);
+
+    const wR = this.cSpecWing++;
+    _pos.set(x + 9.0 * cosR, 20 + bob, z - 9.0 * sinR);
+    _euler.set(0, rotY + Math.PI - flap, -0.25, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.setScalar(1.05);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specWingMesh.setMatrixAt(wR, _mat4);
+    this.specWingMesh.setColorAt(wR, flash ? this.colWhite : this.colCyan);
+
+    // Anillos de astrolabio cruzados
+    const r1 = this.cSpecRing++;
+    _pos.set(x, 18 + bob, z);
+    _euler.set(Math.PI * 0.5, enemy.age * 2.5, 0.4, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.setScalar(14.5);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specRingMesh.setMatrixAt(r1, _mat4);
+    this.specRingMesh.setColorAt(r1, flash ? this.colWhite : this.colGraceJade);
+
+    const r2 = this.cSpecRing++;
+    _euler.set(0.4, -enemy.age * 3.2, Math.PI * 0.3, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.setScalar(11.5);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specRingMesh.setMatrixAt(r2, _mat4);
+    this.specRingMesh.setColorAt(r2, flash ? this.colWhite : this.colIvory);
+  }
+
+  // Criatura 6 (Rediseñada 3D): Coloso Menor / Gólem Bifronte (2 Núcleos de Jade + Cuernos + Puños Acorazados)
+  addColosoMenor(enemy) {
+    if (
+      this.cSpecBody + 5 > POOL_CAPS.SPECIAL ||
+      this.cSpecCore + 2 > POOL_CAPS.SPECIAL ||
+      this.cSpecCone + 2 > POOL_CAPS.SPECIAL
+    ) {
+      return;
+    }
+    const x = enemy.pos.x;
+    const z = -enemy.pos.y;
+    const rotY = enemy.facingAngle + Math.PI * 0.5;
+    const sinR = Math.sin(rotY);
+    const cosR = Math.cos(rotY);
+    const flash = enemy.flashTimer > 0;
+    const stride = Math.sin(enemy.age * 7.5);
+
+    this.addGlow(x, 1.0, z, 56, this.colGraceJade, 0.46);
+
+    // Torso monolítico de hueso tallado
+    const bi = this.cSpecBody++;
+    _pos.set(x, 15 + Math.abs(stride) * 1.6, z);
+    _euler.set(0.12, rotY, stride * 0.08, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.set(16, 20, 12);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specBodyMesh.setMatrixAt(bi, _mat4);
+    this.specBodyMesh.setColorAt(bi, flash ? this.colWhite : this.colOldBone);
+
+    // Hombreras dobles + Puños oscilantes + 2 Cuernos de Gólem
+    for (const side of [-1, 1]) {
+      const si = this.cSpecBody++;
+      _pos.set(x + side * 11 * cosR, 21, z - side * 11 * sinR);
+      _euler.set(0, rotY, -side * 0.2, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.set(7.5, 9.5, 9.5);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specBodyMesh.setMatrixAt(si, _mat4);
+      this.specBodyMesh.setColorAt(si, flash ? this.colWhite : this.colIvory);
+
+      // Puño pesado adelantado con balanceo de marcha
+      const swingZ = side * stride * 5.5 + 5.0;
+      const fi = this.cSpecBody++;
+      _pos.set(
+        x + side * 13.5 * cosR + swingZ * sinR,
+        11,
+        z - side * 13.5 * sinR + swingZ * cosR
+      );
+      _scale.set(6.0, 9.0, 7.5);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specBodyMesh.setMatrixAt(fi, _mat4);
+      this.specBodyMesh.setColorAt(fi, flash ? this.colWhite : this.colOldBone);
+
+      // Cuerno sobre cada hombrera
+      const hi = this.cSpecCone++;
+      _pos.set(x + side * 11.5 * cosR, 28.5, z - side * 11.5 * sinR);
+      _euler.set(0.2, rotY, -side * 0.45, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.set(2.8, 6.2, 2.8);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specConeMesh.setMatrixAt(hi, _mat4);
+      this.specConeMesh.setColorAt(hi, flash ? this.colWhite : this.colGold);
+
+      // Doble núcleo de jade gemelo (indica visualmente que se divide en 2 al morir)
+      const ci = this.cSpecCore++;
+      _pos.set(x + side * 4.8 * cosR + 5.5 * sinR, 18, z - side * 4.8 * sinR + 5.5 * cosR);
+      _euler.set(0, rotY + enemy.age * 3.0, 0, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.set(4.5, 7.2, 4.5);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specCoreMesh.setMatrixAt(ci, _mat4);
+      this.specCoreMesh.setColorAt(ci, flash ? this.colWhite : this.colGraceJade);
+    }
+  }
+
+  // Criatura 7 (Rediseñada 3D): Sombra Abisal (Segador del Vacío con Capucha, Alas Cuchilla y Halo Carmesí)
+  addSombra(enemy) {
+    if (
+      this.cSpecCone + 2 > POOL_CAPS.SPECIAL ||
+      this.cSpecCore >= POOL_CAPS.SPECIAL ||
+      this.cSpecRing >= POOL_CAPS.SPECIAL ||
+      this.cSpecWing + 2 > POOL_CAPS.SPECIAL
+    ) {
+      return;
+    }
+    const x = enemy.pos.x;
+    const z = -enemy.pos.y;
+    const rotY = enemy.facingAngle + Math.PI * 0.5;
+    const sinR = Math.sin(rotY);
+    const cosR = Math.cos(rotY);
+    const flash = enemy.flashTimer > 0;
+    const hover = Math.sin(enemy.age * 7.0) * 2.2;
+
+    this.addGlow(x, 1.0, z, 48, this.colPurple, 0.54);
+
+    // Manto cónico desgarrado de sombra
+    const cloakIdx = this.cSpecCone++;
+    _pos.set(x, 13 + hover, z);
+    _euler.set(0.22, rotY, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.set(9.5, 11.5, 9.5);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specConeMesh.setMatrixAt(cloakIdx, _mat4);
+    this.specConeMesh.setColorAt(cloakIdx, flash ? this.colWhite : this.colDarkPurple);
+
+    // Capucha puntiaguda de verdugo abisal
+    const hoodIdx = this.cSpecCone++;
+    _pos.set(x, 26.5 + hover, z);
+    _euler.set(-0.18, rotY, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.set(5.5, 7.0, 5.5);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specConeMesh.setMatrixAt(hoodIdx, _mat4);
+    this.specConeMesh.setColorAt(hoodIdx, flash ? this.colWhite : this.colPurple);
+
+    // Máscara espectral flotante
+    const ci = this.cSpecCore++;
+    _pos.set(x + 4.5 * sinR, 22 + hover, z + 4.5 * cosR);
+    _euler.set(0, rotY, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.set(4.8, 6.8, 4.8);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specCoreMesh.setMatrixAt(ci, _mat4);
+    this.specCoreMesh.setColorAt(ci, flash ? this.colWhite : this.colVermilion);
+
+    // 2 Cuchillas-ala de sombra a los costados
+    for (const side of [-1, 1]) {
+      const wi = this.cSpecWing++;
+      _pos.set(x + side * 8.5 * cosR, 18 + hover, z - side * 8.5 * sinR);
+      _euler.set(0.35, rotY + (side === 1 ? Math.PI : 0), side * 0.35, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.setScalar(1.0);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specWingMesh.setMatrixAt(wi, _mat4);
+      this.specWingMesh.setColorAt(wi, flash ? this.colWhite : this.colPurple);
+    }
+
+    // Halo abisal carmesí tras la capucha
+    const ri = this.cSpecRing++;
+    _pos.set(x - 2.5 * sinR, 24 + hover, z - 2.5 * cosR);
+    _euler.set(0, rotY, enemy.age * 4.5, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.setScalar(10.5);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specRingMesh.setMatrixAt(ri, _mat4);
+    this.specRingMesh.setColorAt(ri, flash ? this.colWhite : this.colVermilion);
+  }
+
+  // NUEVA CRIATURA 8: Querubín de Rueda / Ophan Bíblico (3 Anillos de Fuego Entrelazados + Ojo Central + 4 Púas Radiales)
+  addOphan(enemy) {
+    if (
+      this.cSpecRing + 3 > POOL_CAPS.SPECIAL ||
+      this.cSpecCore >= POOL_CAPS.SPECIAL ||
+      this.cSpecCone + 4 > POOL_CAPS.SPECIAL
+    ) {
+      return;
+    }
+    const x = enemy.pos.x;
+    const z = -enemy.pos.y;
+    const flash = enemy.flashTimer > 0;
+    const charging = enemy.isSpitTelegraphing;
+    const spinSpeed = charging ? 9.5 : 4.2;
+    const yCenter = 17 + Math.sin(enemy.age * 6.5) * 2.0;
+
+    this.addGlow(x, 1.0, z, charging ? 68 : 48, this.colGold, charging ? 0.85 : 0.48);
+    if (charging) {
+      this.addRing(x, 1.5, z, 32, enemy.age * 7.0, this.colGold, 0.9);
+    }
+
+    // Ojo ardiente en el centro de la rueda
+    const ci = this.cSpecCore++;
+    _pos.set(x, yCenter, z);
+    _euler.set(0, enemy.age * 4.0, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.set(6.8, 6.8, 6.8);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specCoreMesh.setMatrixAt(ci, _mat4);
+    this.specCoreMesh.setColorAt(ci, flash ? this.colWhite : charging ? this.colVermilion : this.colOrange);
+
+    // 3 Ruedas concéntricas entrelazadas (Ophanim)
+    const r1 = this.cSpecRing++;
+    _pos.set(x, yCenter, z);
+    _euler.set(enemy.age * spinSpeed, enemy.facingAngle, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.setScalar(14.5);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specRingMesh.setMatrixAt(r1, _mat4);
+    this.specRingMesh.setColorAt(r1, flash ? this.colWhite : this.colGold);
+
+    const r2 = this.cSpecRing++;
+    _euler.set(0.5, -enemy.age * spinSpeed * 0.85, Math.PI * 0.5, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.setScalar(12.2);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specRingMesh.setMatrixAt(r2, _mat4);
+    this.specRingMesh.setColorAt(r2, flash ? this.colWhite : this.colOrange);
+
+    const r3 = this.cSpecRing++;
+    _euler.set(Math.PI * 0.5, 0, enemy.age * spinSpeed * 1.15, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.setScalar(10.0);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specRingMesh.setMatrixAt(r3, _mat4);
+    this.specRingMesh.setColorAt(r3, flash ? this.colWhite : this.colIvory);
+
+    // 4 Púas solares en cruz alrededor de la rueda exterior
+    for (let k = 0; k < 4; k++) {
+      const si = this.cSpecCone++;
+      const a = enemy.age * spinSpeed + k * (Math.PI * 0.5);
+      _pos.set(x + Math.cos(a) * 15.5, yCenter, z + Math.sin(a) * 15.5);
+      _euler.set(0, -a, -Math.PI * 0.5, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.set(2.4, 4.8, 2.4);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specConeMesh.setMatrixAt(si, _mat4);
+      this.specConeMesh.setColorAt(si, flash ? this.colWhite : this.colGold);
+    }
+  }
+
+  // NUEVA CRIATURA 9: Flagelante de Hierro (Verdugo Acorazado con Escudo Pavés y Mangual Giratorio Carmesí)
+  addFlagelante(enemy) {
+    if (
+      this.cSpecBody + 3 > POOL_CAPS.SPECIAL ||
+      this.cSpecCone + 2 > POOL_CAPS.SPECIAL ||
+      this.cSpecCore >= POOL_CAPS.SPECIAL ||
+      this.cSpecRing >= POOL_CAPS.SPECIAL
+    ) {
+      return;
+    }
+    const x = enemy.pos.x;
+    const z = -enemy.pos.y;
+    const rotY = enemy.facingAngle + Math.PI * 0.5;
+    const sinR = Math.sin(rotY);
+    const cosR = Math.cos(rotY);
+    const flash = enemy.flashTimer > 0;
+    const walk = Math.sin(enemy.age * 8.5);
+
+    this.addGlow(x, 1.0, z, 50, this.colVermilion, 0.45);
+
+    // Torso acorazado de hierro oscuro
+    const bi = this.cSpecBody++;
+    _pos.set(x, 13 + Math.abs(walk) * 1.4, z);
+    _euler.set(0.1, rotY, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.set(12.5, 17.5, 10.5);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specBodyMesh.setMatrixAt(bi, _mat4);
+    this.specBodyMesh.setColorAt(bi, flash ? this.colWhite : this.colVoid);
+
+    // Capirote puntiagudo de hierro + espina dorsal
+    const capIdx = this.cSpecCone++;
+    _pos.set(x, 26.5 + Math.abs(walk) * 1.4, z);
+    _euler.set(0, rotY, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.set(5.8, 9.2, 5.8);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specConeMesh.setMatrixAt(capIdx, _mat4);
+    this.specConeMesh.setColorAt(capIdx, flash ? this.colWhite : this.colVermilion);
+
+    // Escudo Pavés Relicario en el brazo izquierdo (+8.5 Z frontal, -6.5 X)
+    const shIdx = this.cSpecBody++;
+    _pos.set(x - 6.0 * cosR + 8.5 * sinR, 14, z + 6.0 * sinR + 8.5 * cosR);
+    _euler.set(-0.12, rotY, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.set(10.5, 16.5, 3.0);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specBodyMesh.setMatrixAt(shIdx, _mat4);
+    this.specBodyMesh.setColorAt(shIdx, flash ? this.colWhite : this.colOldBone);
+
+    // Emblema dorado sobre el escudo frontal
+    const embIdx = this.cSpecBody++;
+    _pos.set(x - 6.0 * cosR + 10.3 * sinR, 14.5, z + 6.0 * sinR + 10.3 * cosR);
+    _scale.set(4.2, 10.5, 1.8);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specBodyMesh.setMatrixAt(embIdx, _mat4);
+    this.specBodyMesh.setColorAt(embIdx, flash ? this.colWhite : this.colGold);
+
+    // Mangual / Flagelo giratorio en el brazo derecho (+9 X)
+    const flailSpin = enemy.age * 11.5;
+    const fx = x + 10.5 * cosR + Math.cos(flailSpin) * 6.5;
+    const fz = z - 10.5 * sinR + Math.sin(flailSpin) * 6.5;
+
+    const ringIdx = this.cSpecRing++;
+    _pos.set(x + 10.5 * cosR, 17, z - 10.5 * sinR);
+    _euler.set(Math.PI * 0.35, flailSpin, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.setScalar(8.5);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specRingMesh.setMatrixAt(ringIdx, _mat4);
+    this.specRingMesh.setColorAt(ringIdx, flash ? this.colWhite : this.colGold);
+
+    const headIdx = this.cSpecCore++;
+    _pos.set(fx, 17 + Math.sin(flailSpin) * 3.5, fz);
+    _euler.set(flailSpin, flailSpin, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.set(5.5, 5.5, 5.5);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specCoreMesh.setMatrixAt(headIdx, _mat4);
+    this.specCoreMesh.setColorAt(headIdx, flash ? this.colWhite : this.colVermilion);
+
+    const spikeIdx = this.cSpecCone++;
+    _pos.set(fx, 21 + Math.sin(flailSpin) * 3.5, fz);
+    _scale.set(2.5, 4.5, 2.5);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specConeMesh.setMatrixAt(spikeIdx, _mat4);
+    this.specConeMesh.setColorAt(spikeIdx, flash ? this.colWhite : this.colGold);
+  }
+
+  // NUEVA CRIATURA 10: Heraldo del Eclipse (Sumo Sacerdote con Sol Negro, Mitra Bífida y 3 Orbes Satelitales)
+  addEclipseHerald(enemy) {
+    if (
+      this.cSpecCone + 3 > POOL_CAPS.SPECIAL ||
+      this.cSpecCore + 4 > POOL_CAPS.SPECIAL ||
+      this.cSpecRing >= POOL_CAPS.SPECIAL ||
+      this.cSpecWing + 2 > POOL_CAPS.SPECIAL
+    ) {
+      return;
+    }
+    const x = enemy.pos.x;
+    const z = -enemy.pos.y;
+    const rotY = enemy.facingAngle + Math.PI * 0.5;
+    const sinR = Math.sin(rotY);
+    const cosR = Math.cos(rotY);
+    const flash = enemy.flashTimer > 0;
+    const bob = Math.sin(enemy.age * 5.0) * 2.5;
+
+    this.addGlow(x, 1.0, z, 54, this.colGold, 0.52);
+
+    // Túnica ceremonial flotante
+    const robeIdx = this.cSpecCone++;
+    _pos.set(x, 14 + bob, z);
+    _euler.set(0, rotY, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.set(10.5, 13.0, 10.5);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specConeMesh.setMatrixAt(robeIdx, _mat4);
+    this.specConeMesh.setColorAt(robeIdx, flash ? this.colWhite : this.colVoid);
+
+    // Mitra bífida (2 cuernos/puntas litúrgicas de oro)
+    for (const side of [-1, 1]) {
+      const mi = this.cSpecCone++;
+      _pos.set(x + side * 3.6 * cosR, 28.5 + bob, z - side * 3.6 * sinR);
+      _euler.set(0, rotY, -side * 0.24, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.set(2.8, 6.2, 2.8);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specConeMesh.setMatrixAt(mi, _mat4);
+      this.specConeMesh.setColorAt(mi, flash ? this.colWhite : this.colGold);
+
+      // Manto alado carmesí
+      const wi = this.cSpecWing++;
+      _pos.set(x + side * 10.0 * cosR, 19 + bob, z - side * 10.0 * sinR);
+      _euler.set(0, rotY + (side === 1 ? Math.PI : 0), side * 0.25, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.setScalar(1.1);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specWingMesh.setMatrixAt(wi, _mat4);
+      this.specWingMesh.setColorAt(wi, flash ? this.colWhite : this.colVermilion);
+    }
+
+    // Sol Negro Eclipsado flotando sobre su cabeza (núcleo oscuro + corona dorada)
+    const sunCore = this.cSpecCore++;
+    _pos.set(x, 36 + bob, z);
+    _euler.set(0, enemy.age * 2.5, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.set(5.5, 5.5, 5.5);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specCoreMesh.setMatrixAt(sunCore, _mat4);
+    this.specCoreMesh.setColorAt(sunCore, flash ? this.colWhite : this.colPurple);
+
+    const sunRing = this.cSpecRing++;
+    _pos.set(x, 36 + bob, z);
+    _euler.set(0, rotY, enemy.age * 3.2, 'YXZ');
+    _quat.setFromEuler(_euler);
+    _scale.setScalar(9.5);
+    _mat4.compose(_pos, _quat, _scale);
+    this.specRingMesh.setMatrixAt(sunRing, _mat4);
+    this.specRingMesh.setColorAt(sunRing, flash ? this.colWhite : this.colGold);
+
+    // 3 Orbes solares orbitando alrededor del Heraldo
+    for (let o = 0; o < 3; o++) {
+      const oi = this.cSpecCore++;
+      const a = enemy.age * 3.8 + (o / 3) * Math.PI * 2;
+      _pos.set(x + Math.cos(a) * 16.5, 18 + bob + Math.sin(a * 2) * 2.5, z + Math.sin(a) * 16.5);
+      _euler.set(a, a, 0, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.set(3.2, 4.5, 3.2);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specCoreMesh.setMatrixAt(oi, _mat4);
+      this.specCoreMesh.setColorAt(oi, flash ? this.colWhite : o === 0 ? this.colGold : this.colVermilion);
+    }
+  }
+
+  // Construcciones 3D de las Habilidades Especiales de cada Jefe (Espejismos, Obeliscos de Cadena, Tótems de Forja y Custodios)
+  addBossConstruct(c) {
+    const x = c.x;
+    const z = -c.y;
+    const age = c.age || 0;
+
+    if (c.kind === 'seraph_mirage') {
+      // Habilidad Especial Boss 2: Espejismo Astral del Serafín (Clon de Cristal Alado)
+      if (
+        this.cSpecCore + 2 > POOL_CAPS.SPECIAL ||
+        this.cSpecWing + 2 > POOL_CAPS.SPECIAL ||
+        this.cSpecRing >= POOL_CAPS.SPECIAL
+      ) {
+        return;
+      }
+      const bob = Math.sin(age * 8.0) * 3.0;
+      const rotY = (c.facingAngle || 0) + Math.PI * 0.5;
+      const sinR = Math.sin(rotY);
+      const cosR = Math.cos(rotY);
+
+      this.addGlow(x, 1.2, z, 68, this.colColdSilver, 0.72);
+      this.addRing(x, 1.6, z, 28 + Math.sin(age * 9) * 4, age * 5, this.colGraceJade, 0.88);
+
+      const core = this.cSpecCore++;
+      _pos.set(x, 22 + bob, z);
+      _euler.set(0, age * 4.0, 0, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.set(10, 20, 10);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specCoreMesh.setMatrixAt(core, _mat4);
+      this.specCoreMesh.setColorAt(core, this.colColdSilver);
+
+      const crown = this.cSpecCore++;
+      _pos.set(x, 38 + bob, z);
+      _scale.set(6, 10, 6);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specCoreMesh.setMatrixAt(crown, _mat4);
+      this.specCoreMesh.setColorAt(crown, this.colGold);
+
+      for (const side of [-1, 1]) {
+        const wi = this.cSpecWing++;
+        _pos.set(x + side * 12 * cosR, 26 + bob, z - side * 12 * sinR);
+        _euler.set(0, rotY + (side === 1 ? Math.PI : 0), side * 0.35, 'YXZ');
+        _quat.setFromEuler(_euler);
+        _scale.setScalar(1.55);
+        _mat4.compose(_pos, _quat, _scale);
+        this.specWingMesh.setMatrixAt(wi, _mat4);
+        this.specWingMesh.setColorAt(wi, this.colGraceJade);
+      }
+
+      const ri = this.cSpecRing++;
+      _pos.set(x, 24 + bob, z);
+      _euler.set(Math.PI * 0.35, age * 5.0, 0, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.setScalar(19);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specRingMesh.setMatrixAt(ri, _mat4);
+      this.specRingMesh.setColorAt(ri, this.colGold);
+    } else if (c.kind === 'abyss_obelisk') {
+      // Habilidad Especial Boss 3: Obelisco de Excomunión Abisal (Estaca de Cadenas Violetas)
+      if (
+        this.cSpecBody >= POOL_CAPS.SPECIAL ||
+        this.cSpecCore >= POOL_CAPS.SPECIAL ||
+        this.cSpecRing >= POOL_CAPS.SPECIAL
+      ) {
+        return;
+      }
+      this.addGlow(x, 1.2, z, 58, this.colPurple, 0.75);
+      this.addRing(x, 1.6, z, 24, -age * 6, this.colVermilion, 0.85);
+
+      const bi = this.cSpecBody++;
+      _pos.set(x, 16, z);
+      _euler.set(0, age * 2.0, 0, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.set(7.5, 28, 7.5);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specBodyMesh.setMatrixAt(bi, _mat4);
+      this.specBodyMesh.setColorAt(bi, this.colDarkPurple);
+
+      const ci = this.cSpecCore++;
+      _pos.set(x, 35 + Math.sin(age * 8) * 2.5, z);
+      _euler.set(0, -age * 5.0, 0, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.set(7, 11, 7);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specCoreMesh.setMatrixAt(ci, _mat4);
+      this.specCoreMesh.setColorAt(ci, this.colPurple);
+
+      const ri = this.cSpecRing++;
+      _pos.set(x, 22, z);
+      _euler.set(Math.PI * 0.5, 0, age * 5.0, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.setScalar(13.5);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specRingMesh.setMatrixAt(ri, _mat4);
+      this.specRingMesh.setColorAt(ri, this.colVermilion);
+    } else if (c.kind === 'forge_totem') {
+      // Habilidad Especial Boss 1: Yunque Volcánico del Crisol de Forja
+      if (this.cSpecCone >= POOL_CAPS.SPECIAL || this.cSpecCore >= POOL_CAPS.SPECIAL) return;
+      this.addGlow(x, 1.2, z, 52, this.colOrange, 0.72);
+
+      const cone = this.cSpecCone++;
+      _pos.set(x, 12, z);
+      _euler.set(0, age * 2.0, 0, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.set(9.0, 12.0, 9.0);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specConeMesh.setMatrixAt(cone, _mat4);
+      this.specConeMesh.setColorAt(cone, this.colOldBone);
+
+      const ember = this.cSpecCore++;
+      _pos.set(x, 26 + Math.sin(age * 9) * 2, z);
+      _euler.set(age * 4, age * 5, 0, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.set(6.5, 8.5, 6.5);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specCoreMesh.setMatrixAt(ember, _mat4);
+      this.specCoreMesh.setColorAt(ember, this.colOrange);
+    } else if (c.kind === 'relic_sentinel') {
+      // Habilidad Especial Boss 4: Custodio Dorado del Eclipse Final
+      if (
+        this.cSpecCore >= POOL_CAPS.SPECIAL ||
+        this.cSpecRing + 2 > POOL_CAPS.SPECIAL ||
+        this.cSpecCone >= POOL_CAPS.SPECIAL
+      ) {
+        return;
+      }
+      const bob = Math.sin(age * 7) * 2.5;
+      this.addGlow(x, 1.2, z, 62, this.colGold, 0.78);
+
+      const core = this.cSpecCore++;
+      _pos.set(x, 22 + bob, z);
+      _euler.set(0, age * 4.5, 0, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.set(8.5, 14.5, 8.5);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specCoreMesh.setMatrixAt(core, _mat4);
+      this.specCoreMesh.setColorAt(core, this.colGold);
+
+      const r1 = this.cSpecRing++;
+      _pos.set(x, 22 + bob, z);
+      _euler.set(age * 4, age * 3, 0, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.setScalar(15.5);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specRingMesh.setMatrixAt(r1, _mat4);
+      this.specRingMesh.setColorAt(r1, this.colVermilion);
+
+      const r2 = this.cSpecRing++;
+      _euler.set(Math.PI * 0.5, -age * 4, 0, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.setScalar(12.0);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specRingMesh.setMatrixAt(r2, _mat4);
+      this.specRingMesh.setColorAt(r2, this.colGold);
+
+      const spire = this.cSpecCone++;
+      _pos.set(x, 36 + bob, z);
+      _euler.set(0, -age * 3, 0, 'YXZ');
+      _quat.setFromEuler(_euler);
+      _scale.set(4.5, 8.0, 4.5);
+      _mat4.compose(_pos, _quat, _scale);
+      this.specConeMesh.setMatrixAt(spire, _mat4);
+      this.specConeMesh.setColorAt(spire, this.colIvory);
+    }
+  }
+
   commit() {
     this.#commitMesh(this.glowsMesh, this.cGlow, true, this.glowOpacityAttr);
     this.#commitMesh(this.ringsMesh, this.cRing, true, this.ringOpacityAttr);
+    this.#commitMesh(this.specCoreMesh, this.cSpecCore, true, null);
+    this.#commitMesh(this.specBodyMesh, this.cSpecBody, true, null);
+    this.#commitMesh(this.specRingMesh, this.cSpecRing, true, null);
+    this.#commitMesh(this.specConeMesh, this.cSpecCone, true, null);
+    this.#commitMesh(this.specWingMesh, this.cSpecWing, true, null);
 
     this.#commitMesh(this.desoEyeMesh, this.cDeso, false, this.desoFlashAttr);
     this.#commitMesh(this.desoIrisMesh, this.cDeso, false, null);

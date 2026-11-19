@@ -6,8 +6,10 @@ import assert from 'node:assert/strict';
 import {
   CAMPAIGN_PHASES,
   GAME_MODES,
+  LEVEL_UPGRADES,
   PLAYER_AVATARS,
   TOTAL_RUN_DURATION,
+  UPGRADE_RARITIES,
   formatDurationClock,
   getPhaseForElapsedTime,
   stressTierFromIndex
@@ -22,6 +24,7 @@ import {
 } from '../src/engine/aiDirector.js';
 import { TelemetryStore, normalizeInitials } from '../src/engine/telemetryStore.js';
 import { renderAvatarSVG } from '../src/scene/avatarSVGs.js';
+import { formatSimpleTime, renderAppNavHtml } from '../src/ui/domUtils.js';
 
 test('Catálogo completo de 3 modos y 12 avatares con SVG válido', () => {
   assert.equal(GAME_MODES.length, 3);
@@ -329,3 +332,32 @@ test('TelemetryStore: nombres completos de jugador, desglose por fases (phaseBre
   assert.equal(added, 1);
   assert.equal(secondStore.records.length, 2);
 });
+
+test('Sistema de mejoras por nivel, 5 rarezas, bonificaciones iniciales de avatar y barra de pestañas', () => {
+  assert.equal(UPGRADE_RARITIES.length, 5);
+  const rarityIds = UPGRADE_RARITIES.map((r) => r.id);
+  assert.deepEqual(rarityIds, ['common', 'uncommon', 'rare', 'epic', 'legendary']);
+
+  assert.equal(LEVEL_UPGRADES.length, 8);
+  for (const upg of LEVEL_UPGRADES) {
+    for (const rId of rarityIds) {
+      assert.ok(upg.tiers[rId], `Falta rareza ${rId} en mejora ${upg.id}`);
+      assert.ok(upg.tiers[rId].shortTag);
+      assert.ok(upg.tiers[rId].description);
+    }
+  }
+
+  for (const av of PLAYER_AVATARS) {
+    assert.ok(av.passiveBadge, `Falta passiveBadge en avatar ${av.id}`);
+    assert.ok(av.startingBonuses && typeof av.startingBonuses === 'object', `Falta startingBonuses en avatar ${av.id}`);
+  }
+
+  assert.equal(formatSimpleTime(120), '2:00');
+  assert.equal(formatSimpleTime(75), '1:15');
+  assert.equal(formatSimpleTime(34.2), '34.2s');
+
+  const navHtml = renderAppNavHtml({ activeTab: 'players', playerCount: 4, runCount: 9, roomCode: 'CLASE' });
+  assert.ok(navHtml.includes('data-nav-tab="players"'));
+  assert.ok(navHtml.includes('CLASE'));
+});
+

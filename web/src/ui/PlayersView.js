@@ -1,25 +1,46 @@
-// Directorio de Jugadores, Ránking por Medias y Perfil Estadístico Individual
+// Pestaña de Ránking y Perfiles de Jugador — Vista limpia, visual e intuitiva
 
 import {
-  CAMPAIGN_PHASES,
-  GAME_MODES,
-  GAME_MODE_MAP,
-  LEADERBOARD_SORT_METRICS,
   PLAYER_AVATAR_MAP,
-  RELICARIO_PALETTE,
-  stressTierFromIndex
+  RELICARIO_PALETTE
 } from '../engine/constants.js';
 import { renderAvatarSVG } from '../scene/avatarSVGs.js';
-import { escapeHtml, formatSpanishDate, medalColor } from './domUtils.js';
+import {
+  bindAppNavEvents,
+  escapeHtml,
+  formatSimpleTime,
+  formatSpanishDate,
+  medalColor,
+  renderAppNavHtml
+} from './domUtils.js';
+
+const SIMPLE_SORT_OPTIONS = [
+  { id: 'overallRanking', title: 'Puntos' },
+  { id: 'avgTime', title: 'Tiempo' },
+  { id: 'avgKills', title: 'Kills' },
+  { id: 'alphabetical', title: 'A–Z' }
+];
 
 export function mountPlayersView(
   root,
-  { store, liveSync = null, initialPlayerInitials = null, onReturnToStart, onUsePlayerSetup }
+  { store, liveSync = null, initialPlayerInitials = null, onReturnToStart, onUsePlayerSetup, onNavigate }
 ) {
-  let selectedModeFilter = null;
   let sortMetric = 'overallRanking';
   let searchText = '';
   let activeProfileInitials = initialPlayerInitials;
+
+  const navigateTab = (tab) => {
+    if (tab === 'players' && activeProfileInitials) {
+      activeProfileInitials = null;
+      render();
+      return;
+    }
+    if (onNavigate) {
+      onNavigate(tab);
+      return;
+    }
+    if (tab === 'start') onReturnToStart?.();
+  };
 
   const render = () => {
     if (activeProfileInitials) {
@@ -34,26 +55,37 @@ export function mountPlayersView(
   };
 
   const renderDirectoryView = () => {
-    const profiles = store.playerProfiles({ modeFilter: selectedModeFilter, sortBy: sortMetric });
+    const profiles = store.playerProfiles({ modeFilter: null, sortBy: sortMetric });
     const rankedEntries = profiles.map((profile, idx) => ({ rank: idx + 1, profile }));
     const query = searchText.trim().toUpperCase();
     const filtered = query ? rankedEntries.filter((e) => e.profile.initials.includes(query)) : rankedEntries;
-    const leader = rankedEntries[0] || null;
-    const activeSortDef = LEADERBOARD_SORT_METRICS.find((m) => m.id === sortMetric) || LEADERBOARD_SORT_METRICS[0];
-    const modeFilterDef = selectedModeFilter ? GAME_MODE_MAP[selectedModeFilter] : null;
+    const top3 = !query ? profiles.slice(0, 3) : [];
+    const roomCode = liveSync?.roomCode || 'CLASE';
 
     root.innerHTML = `
-      <div class="players-layout">
-        <nav class="sticky-top-nav" aria-label="Navegación de ránking">
-          <button type="button" id="btn-players-home" class="btn-nav-back">‹ Inicio</button>
-          <h1 class="nav-title">JUGADORES Y RÁNKING</h1>
-          <span class="pill-badge-gold">${store.uniquePlayerCount} JUG.</span>
-        </nav>
+      <div class="app-page players-layout">
+        ${renderAppNavHtml({
+          activeTab: 'players',
+          playerCount: store.uniquePlayerCount,
+          runCount: store.records.length,
+          roomCode
+        })}
 
         <main class="screen-shell players-scroll">
-          ${leader ? buildLeaderCardHtml(leader, activeSortDef, modeFilterDef) : ''}
+          <header class="stats-head">
+            <div>
+              <h1 class="telemetry-title">Ránking de jugadores</h1>
+              <p class="panel-subcopy">${store.uniquePlayerCount} ${store.uniquePlayerCount === 1 ? 'jugador registrado' : 'jugadores registrados'}</p>
+            </div>
+          </header>
 
-          <section class="filter-block" aria-label="Búsqueda y filtros del ránking">
+          ${top3.length > 0 ? `
+            <section class="podium-grid" aria-label="Podio Top 3">
+              ${top3.map((prof, idx) => buildMiniPodiumCardHtml(prof, idx + 1)).join('')}
+            </section>
+          ` : ''}
+
+          <section class="filter-block" aria-label="Búsqueda y orden">
             <div class="search-field-wrap">
               <span class="search-icon" aria-hidden="true">⌕</span>
               <input
@@ -61,38 +93,17 @@ export function mountPlayersView(
                 class="search-input"
                 type="search"
                 maxlength="18"
-                placeholder="Buscar jugador por nombre (ej. Víctor, Lucía)..."
+                placeholder="Buscar jugador..."
                 value="${escapeHtml(searchText)}"
                 aria-label="Buscar jugador por nombre"
               />
               ${searchText ? `<button type="button" id="btn-clear-search" class="btn-clear-input" aria-label="Limpiar búsqueda">✕</button>` : ''}
             </div>
 
-            <div class="chips-scroll" role="group" aria-label="Filtrar por fase alcanzada">
-              <button
-                type="button"
-                id="btn-filter-mode-all"
-                class="chip-btn ${selectedModeFilter === null ? 'is-selected' : ''}"
-                style="${selectedModeFilter === null ? `color:${RELICARIO_PALETTE.coldSilver}; border-color:${RELICARIO_PALETTE.coldSilver}; background:${RELICARIO_PALETTE.coldSilver}26;` : ''}"
-              >Todas las fases</button>
-              ${CAMPAIGN_PHASES.map((m) => {
-                const isSel = selectedModeFilter === m.id;
-                return `
-                  <button
-                    type="button"
-                    id="btn-filter-mode-${m.id}"
-                    class="chip-btn filter-mode-chip ${isSel ? 'is-selected' : ''}"
-                    data-mode="${m.id}"
-                    style="${isSel ? `color:${m.accentColor}; border-color:${m.accentColor}; background:${m.accentColor}26;` : ''}"
-                  >F${m.phaseNumber} · ${escapeHtml(m.tableHeader)}</button>
-                `;
-              }).join('')}
-            </div>
-
-            <div class="sort-block">
-              <span class="micro-mono-muted">ORDENAR RÁNKING POR MEDIAS</span>
-              <div class="chips-scroll" role="group" aria-label="Ordenar ránking por medias">
-                ${LEADERBOARD_SORT_METRICS.map((m) => {
+            <div class="sort-pills-row" role="group" aria-label="Ordenar por">
+              <span class="sort-pills-label">Ordenar:</span>
+              <div class="chips-scroll">
+                ${SIMPLE_SORT_OPTIONS.map((m) => {
                   const isSel = sortMetric === m.id;
                   return `
                     <button
@@ -105,38 +116,28 @@ export function mountPlayersView(
                   `;
                 }).join('')}
               </div>
-              <p class="formula-caption">Índice global = Tiempo medio × 10 + Bajas medias × 12 + Superv. % × 2.5</p>
             </div>
           </section>
 
           ${rankedEntries.length === 0
             ? `<section class="panel empty-panel">
-                <h2>Sin jugadores registrados todavía</h2>
-                <p class="panel-subcopy">${selectedModeFilter === null
-                  ? 'Completa partidas con distintos nombres para ver el listado de jugadores, sus medias y su perfil individual.'
-                  : 'Ningún jugador ha alcanzado esta fase todavía.'}</p>
+                <h2>Aún no hay jugadores</h2>
+                <p class="panel-subcopy">En cuanto se juegue la primera partida, aquí aparecerá el ránking.</p>
               </section>`
             : filtered.length === 0
               ? `<section class="panel empty-panel">
-                  <h2>Sin resultados para "${escapeHtml(query)}"</h2>
-                  <button type="button" id="btn-empty-clear-search" class="btn-link-cyan">Limpiar búsqueda</button>
+                  <h2>No se encontró "${escapeHtml(query)}"</h2>
+                  <button type="button" id="btn-empty-clear-search" class="btn-link-cyan">Ver todos</button>
                 </section>`
-              : `<section class="rank-list" aria-label="Lista de jugadores clasificados">
-                  ${filtered.map((entry) => buildRankingRowHtml(entry, sortMetric)).join('')}
+              : `<section class="rank-list" aria-label="Clasificación de jugadores">
+                  ${filtered.map((entry) => buildCleanRankingRowHtml(entry)).join('')}
                 </section>`
           }
         </main>
       </div>
     `;
 
-    root.querySelector('#btn-players-home')?.addEventListener('click', onReturnToStart);
-
-    root.querySelector('#btn-leader-profile')?.addEventListener('click', () => {
-      if (leader) {
-        activeProfileInitials = leader.profile.initials;
-        render();
-      }
-    });
+    bindAppNavEvents(root, navigateTab);
 
     const searchInput = root.querySelector('#input-player-search');
     searchInput?.addEventListener('input', (e) => {
@@ -163,18 +164,6 @@ export function mountPlayersView(
       render();
     });
 
-    root.querySelector('#btn-filter-mode-all')?.addEventListener('click', () => {
-      selectedModeFilter = null;
-      render();
-    });
-
-    root.querySelectorAll('.filter-mode-chip').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        selectedModeFilter = btn.dataset.mode;
-        render();
-      });
-    });
-
     root.querySelectorAll('.sort-metric-chip').forEach((btn) => {
       btn.addEventListener('click', () => {
         sortMetric = btn.dataset.sort;
@@ -182,10 +171,11 @@ export function mountPlayersView(
       });
     });
 
-    root.querySelectorAll('.rank-row-btn').forEach((btn) => {
+    root.querySelectorAll('[data-player-initials]').forEach((btn) => {
       btn.addEventListener('click', () => {
-        activeProfileInitials = btn.dataset.initials;
+        activeProfileInitials = btn.dataset.playerInitials;
         render();
+        window.scrollTo({ top: 0, behavior: 'instant' });
       });
     });
   };
@@ -195,27 +185,30 @@ export function mountPlayersView(
     const displayAvatarId = profile.favoriteAvatar || profile.latestAvatar;
     const avatarDef = displayAvatarId ? PLAYER_AVATAR_MAP[displayAvatarId] : null;
     const accent = avatarDef?.auraColor || RELICARIO_PALETTE.liturgicalGold;
-    const m1985 = profile.statsByMode.classic1985;
-    const m2026 = profile.statsByMode.director2026;
-    const mHybrid = profile.statsByMode.hybrid1985x2026;
-    const stressColor = stressTierFromIndex(profile.avgStress).color;
+    const roomCode = liveSync?.roomCode || 'CLASE';
 
     root.innerHTML = `
-      <div class="players-layout">
-        <nav class="sticky-top-nav" aria-label="Navegación de perfil">
-          <button type="button" id="btn-back-to-ranking" class="btn-nav-back">‹ Ránking</button>
-          <h1 class="nav-title">PERFIL · ${escapeHtml(profile.initials)}</h1>
-          ${globalRank
-            ? `<span class="pill-badge-rank" style="color:${globalRank === 1 ? RELICARIO_PALETTE.liturgicalGold : RELICARIO_PALETTE.coldSilver}; background:${(globalRank === 1 ? RELICARIO_PALETTE.liturgicalGold : RELICARIO_PALETTE.coldSilver)}2B;">#${globalRank} GLOBAL</span>`
-            : '<span></span>'}
-        </nav>
+      <div class="app-page players-layout">
+        ${renderAppNavHtml({
+          activeTab: 'players',
+          playerCount: store.uniquePlayerCount,
+          runCount: store.records.length,
+          roomCode
+        })}
 
         <main class="screen-shell players-scroll">
-          <section class="panel" style="border-color:${accent}80;" aria-label="Identidad del jugador">
+          <div class="profile-back-bar">
+            <button type="button" id="btn-back-to-ranking" class="btn-nav-back">‹ Volver al ránking</button>
+            ${globalRank
+              ? `<span class="pill-badge-rank" style="color:${medalColor(globalRank)}; background:${medalColor(globalRank)}26;">Puesto #${globalRank}</span>`
+              : ''}
+          </div>
+
+          <section class="panel" style="border-color:${accent}80;" aria-label="Ficha del jugador">
             <div class="profile-hero-row">
               ${displayAvatarId
                 ? renderAvatarSVG(displayAvatarId, 56, true)
-                : `<span class="monogram-lg">${escapeHtml(profile.initials)}</span>`}
+                : `<span class="monogram-lg">${escapeHtml(profile.initials.slice(0, 2))}</span>`}
               <div class="profile-hero-info">
                 <div class="profile-name-line">
                   <strong class="profile-initials">${escapeHtml(profile.initials)}</strong>
@@ -224,78 +217,47 @@ export function mountPlayersView(
                     : ''}
                 </div>
                 <p class="panel-subcopy">
-                  ${profile.runCount} ${profile.runCount === 1 ? 'partida registrada' : 'partidas registradas'} ·
-                  ${profile.survivedCount} ${profile.survivedCount === 1 ? 'victoria (2m)' : 'victorias (2m)'}
+                  ${profile.runCount} ${profile.runCount === 1 ? 'partida jugada' : 'partidas jugadas'} ·
+                  ${profile.survivedCount} ${profile.survivedCount === 1 ? 'victoria' : 'victorias'}
                 </p>
-                <p class="profile-last-date">Última sesión: ${escapeHtml(formatSpanishDate(profile.lastPlayedAt))}</p>
+              </div>
+            </div>
+
+            <div class="simple-stats-grid">
+              <div class="simple-stat-card">
+                <span class="simple-stat-val" style="color:${RELICARIO_PALETTE.liturgicalGold};">${Math.round(profile.rankingScore)}</span>
+                <span class="simple-stat-lbl">Puntos</span>
+              </div>
+              <div class="simple-stat-card">
+                <span class="simple-stat-val" style="color:${RELICARIO_PALETTE.ivory};">${formatSimpleTime(profile.bestSurvivedSeconds)}</span>
+                <span class="simple-stat-lbl">Mejor tiempo</span>
+              </div>
+              <div class="simple-stat-card">
+                <span class="simple-stat-val" style="color:${RELICARIO_PALETTE.coldSilver};">${profile.bestKills}</span>
+                <span class="simple-stat-lbl">Récord kills</span>
+              </div>
+              <div class="simple-stat-card">
+                <span class="simple-stat-val" style="color:${RELICARIO_PALETTE.graceJade};">${formatSimpleTime(profile.avgSurvivedSeconds)}</span>
+                <span class="simple-stat-lbl">Tiempo medio</span>
               </div>
             </div>
 
             <button type="button" id="btn-play-as-player" class="btn-play-as">
-              ▶ JUGAR COMO ${escapeHtml(profile.initials)}
+              ▶ Jugar como ${escapeHtml(profile.initials)}
             </button>
           </section>
 
-          <section class="panel-group" aria-label="Medias y récords personales">
-            <h2 class="panel-label gold-label">MEDIAS Y RÉCORDS PERSONALES</h2>
-            <div class="kpi-grid-2">
-              ${kpiCardHtml('TIEMPO MEDIO', `${profile.avgSurvivedSeconds.toFixed(1)}s`, `Récord: ${profile.bestSurvivedSeconds.toFixed(1)}s`, RELICARIO_PALETTE.ivory)}
-              ${kpiCardHtml('BAJAS MEDIAS', `${profile.avgKills.toFixed(1)}`, `Récord: ${profile.bestKills} bajas`, RELICARIO_PALETTE.coldSilver)}
-              ${kpiCardHtml('SUPERVIVENCIA 2M', `${Math.round(profile.survivalRatePercent)}%`, `${profile.survivedCount} de ${profile.runCount} partidas`, RELICARIO_PALETTE.graceJade)}
-              ${kpiCardHtml('PUNTUACIÓN MEDIA', `${Math.round(profile.rankingScore)} pts`, globalRank ? `Puesto #${globalRank} de la clase` : 'Sin clasificar', RELICARIO_PALETTE.liturgicalGold)}
-              ${kpiCardHtml('ESTRÉS MEDIO', `${Math.round(profile.avgStress)}%`, `Pico medio: ${Math.round(profile.avgPeakStress)}%`, stressColor)}
-              ${kpiCardHtml('CURAS MEDIAS', `${profile.avgMedkits.toFixed(1)}`, 'Botiquines por partida', RELICARIO_PALETTE.graceJade)}
-            </div>
-          </section>
-
-          <section class="panel" aria-label="Desglose por fase">
-            <h2 class="panel-label gold-label">DESGLOSE POR FASE (MEDIAS)</h2>
-            <div class="comparison-table" role="table">
-              <div class="cmp-row cmp-header" role="row">
-                <span>MÉTRICA</span>
-                <span style="color:${RELICARIO_PALETTE.oldBone};">F1·1985</span>
-                <span style="color:${RELICARIO_PALETTE.liturgicalGold};">F2·HÍBR.</span>
-                <span style="color:${RELICARIO_PALETTE.vermilion};">F3·2026</span>
-              </div>
-              ${modeRow('Incursiones', `${m1985.runCount}`, `${mHybrid.runCount}`, `${m2026.runCount}`)}
-              ${modeRow('Fase superada', fmtPct(m1985, m1985.survivalRatePercent), fmtPct(mHybrid, mHybrid.survivalRatePercent), fmtPct(m2026, m2026.survivalRatePercent))}
-              ${modeRow('Tiempo medio', fmtSec(m1985, m1985.avgSurvivedSeconds), fmtSec(mHybrid, mHybrid.avgSurvivedSeconds), fmtSec(m2026, m2026.avgSurvivedSeconds))}
-              ${modeRow('Bajas medias', fmtNum(m1985, m1985.avgKills), fmtNum(mHybrid, mHybrid.avgKills), fmtNum(m2026, m2026.avgKills))}
-              ${modeRow('Estrés medio', fmtPct(m1985, m1985.avgStress), fmtPct(mHybrid, mHybrid.avgStress), fmtPct(m2026, m2026.avgStress))}
-              ${modeRow('Estrés pico', fmtPct(m1985, m1985.avgPeakStress), fmtPct(mHybrid, mHybrid.avgPeakStress), fmtPct(m2026, m2026.avgPeakStress))}
-            </div>
-          </section>
-
-          ${profile.usedAvatars.length > 0 ? `
-            <section class="panel-group" aria-label="Avatares utilizados">
-              <h2 class="panel-label">AVATARES UTILIZADOS</h2>
-              <div class="chips-scroll">
-                ${profile.usedAvatars.map((st) => {
-                  const av = PLAYER_AVATAR_MAP[st.avatar];
-                  if (!av) return '';
-                  return `
-                    <div class="used-avatar-chip" style="border-color:${av.auraColor}6E;">
-                      ${renderAvatarSVG(av.id, 30, true)}
-                      <div>
-                        <div class="used-av-name">${escapeHtml(av.shortLabel)}</div>
-                        <div class="used-av-count" style="color:${av.auraColor};">${st.count} ${st.count === 1 ? 'uso' : 'usos'}</div>
-                      </div>
-                    </div>
-                  `;
-                }).join('')}
-              </div>
-            </section>
-          ` : ''}
-
-          <section class="panel-group" aria-label="Historial de partidas del jugador">
-            <h2 class="panel-label">HISTORIAL DE ${escapeHtml(profile.initials)} (${profile.runs.length})</h2>
+          <section class="panel-group" aria-label="Partidas del jugador">
+            <h2 class="panel-label">Partidas de ${escapeHtml(profile.initials)} (${profile.runs.length})</h2>
             <div class="history-list">
-              ${profile.runs.map((rec) => buildPlayerRunCardHtml(rec)).join('')}
+              ${profile.runs.map((rec) => buildPlayerRunRowHtml(rec)).join('')}
             </div>
           </section>
         </main>
       </div>
     `;
+
+    bindAppNavEvents(root, navigateTab);
 
     root.querySelector('#btn-back-to-ranking')?.addEventListener('click', () => {
       activeProfileInitials = null;
@@ -323,52 +285,51 @@ export function mountPlayersView(
   };
 }
 
-function buildLeaderCardHtml(leader, sortDef, modeFilterDef) {
-  const p = leader.profile;
-  return `
-    <button type="button" id="btn-leader-profile" class="leader-card-btn">
-      ${p.favoriteAvatar
-        ? renderAvatarSVG(p.favoriteAvatar, 42, true)
-        : `<span class="monogram-md">${escapeHtml(p.initials.slice(0, 2))}</span>`}
-      <span class="leader-info">
-        <span class="leader-top-tag">
-          <span class="leader-tag-gold">LÍDER #1 · ${escapeHtml(sortDef.title.toUpperCase())}</span>
-          ${modeFilterDef ? `<span class="mode-badge-xs" style="color:${modeFilterDef.accentColor}; background:${modeFilterDef.accentColor}2E;">${escapeHtml(modeFilterDef.tableHeader)}</span>` : ''}
-        </span>
-        <strong class="leader-main">${escapeHtml(p.initials)} · ${Math.round(p.rankingScore)} pts</strong>
-        <small class="leader-stats">${p.avgSurvivedSeconds.toFixed(1)}s medio · ${p.avgKills.toFixed(1)} bajas/part. · ${Math.round(p.survivalRatePercent)}% superv.</small>
-      </span>
-      <span class="leader-crown" aria-hidden="true">♛</span>
-    </button>
-  `;
-}
-
-function buildRankingRowHtml(entry, sortMetric) {
-  const p = entry.profile;
-  const rColor = medalColor(entry.rank);
-  const favDef = p.favoriteAvatar ? PLAYER_AVATAR_MAP[p.favoriteAvatar] : null;
-  const favLabel = favDef ? favDef.shortLabel : 'Clásico';
-  const favColor = favDef ? favDef.auraColor : RELICARIO_PALETTE.oldBone;
-  const stressCol = stressTierFromIndex(p.avgStress).color;
+function buildMiniPodiumCardHtml(prof, rank) {
+  const color = medalColor(rank);
+  const avatarId = prof.favoriteAvatar || prof.latestAvatar || 'penitente';
+  const crown = rank === 1 ? '♛ #1' : rank === 2 ? '★ #2' : '◆ #3';
 
   return `
     <button
       type="button"
-      class="rank-row-btn"
-      data-initials="${escapeHtml(p.initials)}"
+      class="podium-card podium-rank-${rank}"
+      data-player-initials="${escapeHtml(prof.initials)}"
+      style="border-color:${color}88;"
+    >
+      <span class="podium-medal-tag" style="color:${color}; background:${color}24;">${crown}</span>
+      ${renderAvatarSVG(avatarId, rank === 1 ? 46 : 40, true)}
+      <strong class="podium-initials">${escapeHtml(prof.initials)}</strong>
+      <span class="podium-pts" style="color:${color};">${Math.round(prof.rankingScore)} pts</span>
+      <span class="podium-meta">Mejor: ${formatSimpleTime(prof.bestSurvivedSeconds)}</span>
+    </button>
+  `;
+}
+
+function buildCleanRankingRowHtml(entry) {
+  const p = entry.profile;
+  const rColor = medalColor(entry.rank);
+  const avatarId = p.favoriteAvatar || p.latestAvatar;
+
+  return `
+    <button
+      type="button"
+      class="rank-row-btn rank-row-btn--clean"
+      data-player-initials="${escapeHtml(p.initials)}"
       style="${entry.rank === 1 ? `border-color:${RELICARIO_PALETTE.liturgicalGold}8C;` : ''}"
     >
       <div class="rank-row-top">
         <span class="rank-badge" style="color:${rColor}; background:${rColor}29;">#${entry.rank}</span>
-        ${p.favoriteAvatar
-          ? renderAvatarSVG(p.favoriteAvatar, 34, true)
+        ${avatarId
+          ? renderAvatarSVG(avatarId, 34, true)
           : `<span class="monogram-sm">${escapeHtml(p.initials.slice(0, 2))}</span>`}
         <div class="rank-identity">
-          <div class="rank-name-line">
-            <strong class="rank-initials">${escapeHtml(p.initials)}</strong>
-            <span class="mode-badge-xs" style="color:${favColor}; background:${favColor}29;">${escapeHtml(favLabel)}</span>
-          </div>
-          <span class="rank-runs-line">${p.runCount} ${p.runCount === 1 ? 'partida' : 'partidas'} · ${p.survivedCount} ${p.survivedCount === 1 ? 'superv.' : 'supervs.'}</span>
+          <strong class="rank-initials">${escapeHtml(p.initials)}</strong>
+          <span class="rank-runs-line">
+            Mejor: <strong>${formatSimpleTime(p.bestSurvivedSeconds)}</strong> ·
+            Media: ${Math.round(p.avgKills)} kills ·
+            ${p.runCount} ${p.runCount === 1 ? 'partida' : 'partidas'}
+          </span>
         </div>
         <div class="rank-pts-block">
           <strong class="rank-pts-num">${Math.round(p.rankingScore)}</strong>
@@ -376,79 +337,24 @@ function buildRankingRowHtml(entry, sortMetric) {
         </div>
         <span class="chevron-right">›</span>
       </div>
-
-      <div class="rank-averages-grid">
-        ${avgCellHtml('T. MEDIO', `${p.avgSurvivedSeconds.toFixed(1)}s`, RELICARIO_PALETTE.ivory, sortMetric === 'avgTime')}
-        ${avgCellHtml('BAJAS MED.', `${p.avgKills.toFixed(1)}`, RELICARIO_PALETTE.coldSilver, sortMetric === 'avgKills')}
-        ${avgCellHtml('SUPERV.', `${Math.round(p.survivalRatePercent)}%`, RELICARIO_PALETTE.graceJade, sortMetric === 'survivalRate')}
-        ${avgCellHtml('ESTRÉS MED.', `${Math.round(p.avgStress)}%`, stressCol, sortMetric === 'avgStress')}
-      </div>
     </button>
   `;
 }
 
-function avgCellHtml(label, value, color, highlighted) {
-  return `
-    <span class="avg-cell ${highlighted ? 'is-highlighted' : ''}" style="${highlighted ? `background:${color}22; border-color:${color}80;` : ''}">
-      <span class="avg-cell-lbl">${label}</span>
-      <span class="avg-cell-val" style="color:${color};">${escapeHtml(value)}</span>
-    </span>
-  `;
-}
-
-function kpiCardHtml(title, value, subtitle, color) {
-  return `
-    <div class="kpi-card">
-      <span class="kpi-card-title">${title}</span>
-      <strong class="kpi-card-value" style="color:${color};">${escapeHtml(value)}</strong>
-      <span class="kpi-card-sub">${escapeHtml(subtitle)}</span>
-    </div>
-  `;
-}
-
-function modeRow(label, v85, vHyb, v26) {
-  return `
-    <div class="cmp-row" role="row">
-      <span class="cmp-label">${escapeHtml(label)}</span>
-      <span class="cmp-num" style="color:${RELICARIO_PALETTE.oldBone};">${escapeHtml(v85)}</span>
-      <span class="cmp-num" style="color:${RELICARIO_PALETTE.liturgicalGold};">${escapeHtml(vHyb)}</span>
-      <span class="cmp-num" style="color:${RELICARIO_PALETTE.ivory};">${escapeHtml(v26)}</span>
-    </div>
-  `;
-}
-
-function buildPlayerRunCardHtml(rec) {
-  const reachedPhase = rec.reachedPhase || (rec.survivedSeconds >= 80 ? 3 : rec.survivedSeconds >= 40 ? 2 : 1);
-  const phaseDef = CAMPAIGN_PHASES[Math.min(2, Math.max(0, reachedPhase - 1))];
-  const statusCol = rec.didSurvive ? RELICARIO_PALETTE.graceJade : RELICARIO_PALETTE.vermilion;
-  const stressCol = stressTierFromIndex(rec.averageStress).color;
+function buildPlayerRunRowHtml(rec) {
+  const statusCol = rec.didSurvive ? RELICARIO_PALETTE.graceJade : RELICARIO_PALETTE.ivory;
 
   return `
-    <div class="player-run-card">
-      <div class="player-run-top">
-        <div class="player-run-badges">
-          ${rec.avatar ? renderAvatarSVG(rec.avatar, 22, false) : ''}
-          <span class="mode-badge-sm" style="color:${phaseDef.accentColor}; background:${phaseDef.accentColor}26;">F${reachedPhase}·${escapeHtml(phaseDef.shortBadge)}</span>
-          <span class="run-status-tag" style="color:${statusCol};">${rec.didSurvive ? 'VICTORIA 2:00' : 'CAÍDA'}</span>
-        </div>
+    <div class="history-row-btn" style="cursor:default;">
+      <span class="hist-left">
+        ${rec.avatar ? renderAvatarSVG(rec.avatar, 22, false) : ''}
+        <strong class="hist-sec" style="color:${statusCol};">${formatSimpleTime(rec.survivedSeconds)}</strong>
+        ${rec.didSurvive ? `<span class="mode-badge-sm" style="color:${RELICARIO_PALETTE.graceJade}; background:${RELICARIO_PALETTE.graceJade}22;">★ Victoria</span>` : ''}
+      </span>
+      <span class="hist-right">
+        <span class="hist-kills">${rec.kills} kills</span>
         <span class="run-date-label">${escapeHtml(formatSpanishDate(rec.playedAt))}</span>
-      </div>
-      <div class="player-run-stats">
-        <strong style="color:${statusCol};">${rec.survivedSeconds.toFixed(1)}s</strong>
-        <span style="color:${RELICARIO_PALETTE.coldSilver};">${rec.kills} bajas</span>
-        <span style="color:${stressCol};">Estrés ${Math.round(rec.averageStress)}% (pico ${Math.round(rec.peakStress)}%)</span>
-        ${rec.medkitsCollected > 0 ? `<strong class="medkit-tag">+${rec.medkitsCollected}C</strong>` : ''}
-      </div>
+      </span>
     </div>
   `;
-}
-
-function fmtPct(m, val) {
-  return m.runCount > 0 ? `${Math.round(val)}%` : '—';
-}
-function fmtSec(m, val) {
-  return m.runCount > 0 ? `${val.toFixed(1)}s` : '—';
-}
-function fmtNum(m, val) {
-  return m.runCount > 0 ? `${val.toFixed(1)}` : '—';
 }
